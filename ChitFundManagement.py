@@ -9,85 +9,119 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # =====================================================
-# 🔐 PRIVATE ACCESS CONTROL (NO LOGIN SCREEN)
+# PAGE CONFIG
 # =====================================================
 
-# 👉 Put same key in Streamlit Cloud → Settings → Secrets
-# ACCESS_KEY="YOUR_SECRET_KEY"
+st.set_page_config(layout="wide")
 
-try:
-    SECRET_KEY = st.secrets["ACCESS_KEY"]
-except:
-    # fallback for local testing
-    SECRET_KEY = "MYSECRET123"
+# =====================================================
+# 🔐 ULTIMATE SECURE ACCESS (GOOGLE ACCOUNT CHECK)
+# =====================================================
 
-query_params = st.query_params
+# Streamlit provides logged-in user info automatically
 
-if "key" not in query_params or query_params["key"] != SECRET_KEY:
-    st.set_page_config(layout="centered")
-    st.error("⛔ Access Denied")
+user_email = st.experimental_user.email
+
+# Allowed email from secrets
+allowed_email = st.secrets["ALLOWED_EMAIL"]
+
+if user_email != allowed_email:
+
+    st.error("⛔ Access denied.")
+
     st.stop()
 
+
 # =====================================================
-# 📱 TABLET OPTIMIZED PAGE SETTINGS
+# 📱 PAGE SETTINGS (Tablet Optimized)
 # =====================================================
 
 st.set_page_config(
     page_title="Chit Fund Manager",
     page_icon="💰",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # =====================================================
-# 🎨 TABLET UI STYLING (11 inch optimized)
+# 🎨 TABLET UI STYLING
 # =====================================================
 
 st.markdown("""
 <style>
 
-/* Global spacing */
 .block-container {
-    padding-top: 1.5rem;
-    padding-bottom: 2rem;
-    max-width: 1400px;
+    padding-top: 2rem;
+    padding-left: 2rem;
+    padding-right: 2rem;
 }
 
-/* Bigger fonts for tablet */
-html, body, [class*="css"]  {
+html, body, [class*="css"] {
     font-size: 18px;
 }
 
-/* Buttons bigger for touch */
 .stButton>button {
     height: 3rem;
     font-size: 18px;
-    border-radius: 10px;
+    border-radius: 8px;
 }
 
-/* Metrics bigger */
-[data-testid="stMetricValue"] {
-    font-size: 26px;
-}
-
-/* Tabs spacing */
-.stTabs [data-baseweb="tab"] {
+.stTextInput input {
+    height: 45px;
     font-size: 18px;
-    padding: 10px 20px;
 }
 
-/* Dataframe touch friendly */
-[data-testid="stDataFrame"] {
-    font-size: 16px;
-}
-
-/* Sidebar width optimized */
-section[data-testid="stSidebar"] {
-    width: 300px !important;
+h1, h2, h3 {
+    text-align: center;
 }
 
 </style>
 """, unsafe_allow_html=True)
+
+# =====================================================
+# 🔐 SECURE LOGIN SYSTEM
+# =====================================================
+
+def login_page():
+
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+
+    if st.session_state.logged_in:
+        return True
+
+    # Center login UI
+    col1, col2, col3 = st.columns([1,2,1])
+
+    with col2:
+        st.title("🔐 Secure Access")
+
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+
+        if st.button("Login", use_container_width=True):
+
+            if (
+                username == st.secrets["APP_USERNAME"]
+                and password == st.secrets["APP_PASSWORD"]
+            ):
+                st.session_state.logged_in = True
+                st.success("Login successful")
+                st.rerun()
+
+            else:
+                st.error("Invalid credentials")
+
+    st.stop()
+
+# Run login check BEFORE loading app
+login_page()
+
+# =====================================================
+# ✅ APP STARTS BELOW
+# =====================================================
+
+st.title("💰 Chit Fund Management Dashboard")
 
 
 
@@ -1614,5 +1648,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
