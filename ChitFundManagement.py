@@ -8,34 +8,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(layout="wide")
-
-# =====================================================
-# 🔐 ULTIMATE SECURE ACCESS (SAFE VERSION)
-# =====================================================
-
-allowed_email = st.secrets["ALLOWED_EMAIL"]
-
-# Check if experimental_user exists
-if hasattr(st, "experimental_user"):
-
-    user = st.experimental_user
-
-    if hasattr(user, "email"):
-        user_email = user.email
-    else:
-        st.error("User authentication not detected.")
-        st.stop()
-
-else:
-    st.error("Authentication not enabled in Streamlit Cloud.")
-    st.stop()
-
-# Email verification
-if user_email != allowed_email:
-    st.error("⛔ Access denied.")
-    st.stop()
-
 # =====================================================
 # 📱 PAGE SETTINGS (Tablet Optimized)
 # =====================================================
@@ -92,9 +64,8 @@ def login_page():
         st.session_state.logged_in = False
 
     if st.session_state.logged_in:
-        return True
+        return
 
-    # Center login UI
     col1, col2, col3 = st.columns([1,2,1])
 
     with col2:
@@ -110,9 +81,7 @@ def login_page():
                 and password == st.secrets["APP_PASSWORD"]
             ):
                 st.session_state.logged_in = True
-                st.success("Login successful")
                 st.rerun()
-
             else:
                 st.error("Invalid credentials")
 
@@ -1652,6 +1621,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
