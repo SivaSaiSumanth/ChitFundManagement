@@ -8,29 +8,33 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# =====================================================
-# PAGE CONFIG
-# =====================================================
-
 st.set_page_config(layout="wide")
 
 # =====================================================
-# 🔐 ULTIMATE SECURE ACCESS (GOOGLE ACCOUNT CHECK)
+# 🔐 ULTIMATE SECURE ACCESS (SAFE VERSION)
 # =====================================================
 
-# Streamlit provides logged-in user info automatically
-
-user_email = st.experimental_user.email
-
-# Allowed email from secrets
 allowed_email = st.secrets["ALLOWED_EMAIL"]
 
-if user_email != allowed_email:
+# Check if experimental_user exists
+if hasattr(st, "experimental_user"):
 
-    st.error("⛔ Access denied.")
+    user = st.experimental_user
 
+    if hasattr(user, "email"):
+        user_email = user.email
+    else:
+        st.error("User authentication not detected.")
+        st.stop()
+
+else:
+    st.error("Authentication not enabled in Streamlit Cloud.")
     st.stop()
 
+# Email verification
+if user_email != allowed_email:
+    st.error("⛔ Access denied.")
+    st.stop()
 
 # =====================================================
 # 📱 PAGE SETTINGS (Tablet Optimized)
@@ -1648,6 +1652,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
