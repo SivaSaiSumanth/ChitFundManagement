@@ -19,6 +19,7 @@ try:
     SECRET_KEY = st.secrets["ACCESS_KEY"]
 except:
     # fallback for local testing
+    SECRET_KEY = "MYSECRET123"
 
 query_params = st.query_params
 
@@ -1613,4 +1614,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
