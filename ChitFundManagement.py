@@ -8,6 +8,87 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# =====================================================
+# 🔐 PRIVATE ACCESS CONTROL (NO LOGIN SCREEN)
+# =====================================================
+
+# 👉 Put same key in Streamlit Cloud → Settings → Secrets
+# ACCESS_KEY="YOUR_SECRET_KEY"
+
+try:
+    SECRET_KEY = st.secrets["ACCESS_KEY"]
+except:
+    # fallback for local testing
+
+query_params = st.query_params
+
+if "key" not in query_params or query_params["key"] != SECRET_KEY:
+    st.set_page_config(layout="centered")
+    st.error("⛔ Access Denied")
+    st.stop()
+
+# =====================================================
+# 📱 TABLET OPTIMIZED PAGE SETTINGS
+# =====================================================
+
+st.set_page_config(
+    page_title="Chit Fund Manager",
+    page_icon="💰",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# =====================================================
+# 🎨 TABLET UI STYLING (11 inch optimized)
+# =====================================================
+
+st.markdown("""
+<style>
+
+/* Global spacing */
+.block-container {
+    padding-top: 1.5rem;
+    padding-bottom: 2rem;
+    max-width: 1400px;
+}
+
+/* Bigger fonts for tablet */
+html, body, [class*="css"]  {
+    font-size: 18px;
+}
+
+/* Buttons bigger for touch */
+.stButton>button {
+    height: 3rem;
+    font-size: 18px;
+    border-radius: 10px;
+}
+
+/* Metrics bigger */
+[data-testid="stMetricValue"] {
+    font-size: 26px;
+}
+
+/* Tabs spacing */
+.stTabs [data-baseweb="tab"] {
+    font-size: 18px;
+    padding: 10px 20px;
+}
+
+/* Dataframe touch friendly */
+[data-testid="stDataFrame"] {
+    font-size: 16px;
+}
+
+/* Sidebar width optimized */
+section[data-testid="stSidebar"] {
+    width: 300px !important;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+
 
 class ChitFundTracker:
     def __init__(self, data_file="chitfund_data.json"):
@@ -1532,3 +1613,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
