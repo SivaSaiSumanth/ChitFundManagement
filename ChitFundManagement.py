@@ -909,7 +909,7 @@ def main():
         layout="wide"
     )
    
-    st.title("💰 Chit Fund Collection Tracker")
+    
     st.markdown("---")
    
     # Initialize tracker
@@ -1621,6 +1621,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
