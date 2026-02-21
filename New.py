@@ -357,10 +357,8 @@ def authenticate():
         user = st.text_input("Username")
         pwd = st.text_input("Password", type="password")
         if st.button("Login"):
-            if user == "admin" and pwd == "admin123":
+            if user == st.secrets["APP_USERNAME"] and pwd == st.secrets["APP_PASSWORD"]:
                 st.session_state.role = "admin"
-            elif user == "collector" and pwd == "collector123":
-                st.session_state.role = "collector"
             else:
                 st.error("Invalid credentials")
 
