@@ -899,7 +899,7 @@ def main():
         st.stop()
 
     # -------------------- DASHBOARD AFTER LOGIN --------------------
-    role = st.session_state.role
+    role = "admin"
 
     # -------------------- SIDEBAR --------------------
     # Logout button at top of sidebar
