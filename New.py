@@ -1,0 +1,926 @@
+# FULL STREAMLIT APP – SQLITE BACKED CHIT FUND TRACKER
+# SQLite + Dashboard + Roles + 3-Color Ledger + Responsive Payment UX
+
+import streamlit as st
+import sqlite3
+from datetime import date, datetime, timedelta
+
+import pdfplumber
+import re
+from datetime import datetime
+
+from contextlib import contextmanager
+import pandas as pd
+import plotly.express as px
+
+
+
+DB_NAME = "chitfund.db"
+
+# ===================== DB LAYER =====================
+@contextmanager
+def get_conn():
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_db():
+    with get_conn() as conn:
+        c = conn.cursor()
+        
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            phonepe_contact_name TEXT,
+            address TEXT,
+            phone TEXT,
+            start_date DATE,
+            daily_amount REAL,
+            principal REAL,
+            witness_name TEXT,
+            witness_address TEXT,
+            witness_phone TEXT,
+            customer_photo TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER,
+            txn_date DATE,
+            expected_amount REAL,
+            paid_amount REAL DEFAULT 0,
+            UNIQUE(customer_id, txn_date)
+        )""")
+
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER,
+            payment_date DATE,
+            amount REAL,
+            txn_id TEXT UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""")
+
+
+# ===================== BUSINESS LOGIC =====================
+class ChitFundDB:
+    def __init__(self):
+        init_db()
+
+    def add_customer(self, name, phonepe_name, address, phone, start_date, daily, principal,
+                     wname, waddr, wphone):
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO customers
+                    (name, phonepe_contact_name, address, phone, start_date,
+                    daily_amount, principal,
+                    witness_name, witness_address, witness_phone)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (name, phonepe_name, address, phone, start_date, daily, principal,
+                  wname, waddr, wphone))
+            cid = c.lastrowid
+
+        self._init_ledger(cid)
+        return cid
+
+    def _init_ledger(self, cid):
+        with get_conn() as conn:
+            c = conn.cursor()
+            cust = c.execute("SELECT * FROM customers WHERE id=?", (cid,)).fetchone()
+            bal = cust['principal']
+            d = datetime.strptime(cust['start_date'], "%Y-%m-%d").date()
+
+            while bal > 0:
+                if d.weekday() != 6:  # Skip Sunday
+                    bal -= cust['daily_amount']
+                    c.execute("""
+                        INSERT OR IGNORE INTO transactions
+                        (customer_id, txn_date, expected_amount)
+                        VALUES (?, ?, ?)
+                    """, (cid, d, cust['daily_amount']))
+                d += timedelta(days=1)
+
+    def collect_payment(self, cid, amount, pay_date, txn_id=None):
+
+        with get_conn() as conn:
+            c = conn.cursor()
+
+            # 🔹 Prevent duplicate txn_id entry
+            if txn_id:
+                exists = c.execute("""
+                    SELECT 1 FROM payments WHERE txn_id=?
+                """, (txn_id,)).fetchone()
+                if exists:
+                    return
+
+            amount = float(amount)
+            remaining = amount
+
+            # 🔹 Insert payment record
+            c.execute("""
+                INSERT INTO payments (customer_id, payment_date, amount, txn_id)
+                VALUES (?,?,?,?)
+            """, (cid, pay_date, amount, txn_id))
+
+            # 🔹 Fetch oldest unpaid transactions
+            txns = c.execute("""
+                SELECT id, expected_amount, paid_amount
+                FROM transactions
+                WHERE customer_id=?
+                  AND paid_amount < expected_amount
+                ORDER BY txn_date ASC
+            """, (cid,)).fetchall()
+
+            # 🔹 Allocate payment to oldest dues first
+            for t in txns:
+
+                if remaining <= 0:
+                    break
+
+                txn_id_db = t["id"]
+                expected = float(t["expected_amount"])
+                paid = float(t["paid_amount"])
+
+                pending = expected - paid
+
+                if remaining >= pending:
+                    # Fully settle this date
+                    c.execute("""
+                        UPDATE transactions
+                        SET paid_amount = expected_amount
+                        WHERE id=?
+                    """, (txn_id_db,))
+                    remaining -= pending
+                else:
+                    # Partial settle
+                    c.execute("""
+                        UPDATE transactions
+                        SET paid_amount = paid_amount + ?
+                        WHERE id=?
+                    """, (remaining, txn_id_db))
+                    remaining = 0
+
+            conn.commit()
+
+
+    def customers(self):
+        with get_conn() as conn:
+            return conn.execute("SELECT * FROM customers ORDER BY id").fetchall()
+
+    def ledger(self, cid):
+        with get_conn() as conn:
+            return conn.execute("""
+                SELECT txn_date, expected_amount, paid_amount,
+                       expected_amount - paid_amount AS pending
+                FROM transactions
+                WHERE customer_id=?
+                ORDER BY txn_date
+            """, (cid,)).fetchall()
+
+    def customer_ledger_summary(self, cid):
+        today = date.today()
+
+
+
+        with get_conn() as conn:
+            c = conn.cursor()
+
+            principal = c.execute(
+                "SELECT principal FROM customers WHERE id=?",
+                (cid,)
+            ).fetchone()[0]
+
+            total_paid = c.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE customer_id=?",
+                (cid,)
+            ).fetchone()[0]
+
+            pending_till_today = c.execute("""
+                SELECT COALESCE(SUM(expected_amount - paid_amount), 0)
+                FROM transactions
+                WHERE customer_id=?
+                  AND txn_date <= ?
+                  AND paid_amount < expected_amount
+            """, (cid, today)).fetchone()[0]
+
+            total_days = c.execute(
+                "SELECT COUNT(*) FROM transactions WHERE customer_id=?",
+                (cid,)
+            ).fetchone()[0]
+
+            days_paid = c.execute("""
+                SELECT COUNT(*) FROM transactions
+                WHERE customer_id=?
+                  AND paid_amount >= expected_amount
+            """, (cid,)).fetchone()[0]
+
+        extra_paid = max(0, total_paid - (principal - pending_till_today))
+
+        return {
+            "principal": principal,
+            "total_paid": total_paid,
+            "pending_till_today": pending_till_today,
+            "extra_paid": extra_paid,
+            "days_paid": days_paid,
+            "total_days": total_days
+        }
+
+    def dashboard_summary(self):
+        today = date.today()
+
+        with get_conn() as conn:
+            c = conn.cursor()
+
+            total_customers = c.execute(
+                "SELECT COUNT(*) FROM customers"
+            ).fetchone()[0]
+
+            total_principal = c.execute(
+                "SELECT COALESCE(SUM(principal), 0) FROM customers"
+            ).fetchone()[0]
+
+            total_collected = c.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM payments"
+            ).fetchone()[0]
+
+            money_with_customers = total_principal - total_collected
+
+            overdue_customers = c.execute("""
+                SELECT COUNT(DISTINCT customer_id)
+                FROM transactions
+                WHERE txn_date < ?
+                  AND paid_amount < expected_amount
+            """, (today,)).fetchone()[0]
+
+            overdue_amount = c.execute("""
+                SELECT COALESCE(SUM(expected_amount - paid_amount), 0)
+                FROM transactions
+                WHERE txn_date <= ?
+                  AND paid_amount < expected_amount
+            """, (today,)).fetchone()[0]
+
+            todays_target = c.execute("""
+                SELECT COALESCE(SUM(expected_amount - paid_amount), 0)
+                FROM transactions
+                WHERE txn_date = ?
+                  AND paid_amount < expected_amount
+            """, (today,)).fetchone()[0]
+
+            todays_collected = c.execute("""
+                SELECT COALESCE(SUM(amount), 0)
+                FROM payments
+                WHERE payment_date = ?
+            """, (today,)).fetchone()[0]
+
+            advance_used_today = c.execute("""
+                SELECT COALESCE(SUM(expected_amount), 0)
+                FROM transactions
+                WHERE txn_date = ?
+                  AND paid_amount >= expected_amount
+                  AND customer_id NOT IN (
+                      SELECT customer_id
+                      FROM payments
+                      WHERE payment_date = ?
+                  )
+            """, (today, today)).fetchone()[0]
+
+            closed_customers = c.execute("""
+                SELECT COUNT(*)
+                FROM customers c
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM transactions t
+                    WHERE t.customer_id = c.id
+                      AND t.paid_amount < t.expected_amount
+                )
+            """).fetchone()[0]
+
+        active_customers = total_customers - closed_customers
+
+        efficiency = (
+            round((total_collected / total_principal) * 100, 2)
+            if total_principal else 0
+        )
+
+        return {
+            "total_customers": total_customers,
+            "total_principal": total_principal,
+            "total_collected": total_collected,
+            "money_with_customers": money_with_customers,
+            "overdue_customers": overdue_customers,
+            "overdue_amount": overdue_amount,
+            "todays_target": todays_target,
+            "todays_collected": todays_collected,
+            "advance_used_today": advance_used_today,
+            "closed_customers": closed_customers,
+            "active_customers": active_customers,
+            "efficiency": efficiency
+        }
+    
+    def update_customer_photo(self, cid, path):
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE customers SET customer_photo=? WHERE id=?",
+                (path, cid)
+            )
+
+    def update_customer(self, cid, name, phonepe, address, phone):
+        with get_conn() as conn:
+            conn.execute("""
+                UPDATE customers
+                SET name=?, phonepe_contact_name=?, address=?, phone=?
+                WHERE id=?
+            """, (name, phonepe, address, phone, cid))    
+        
+    
+
+
+
+# ===================== AUTH =====================
+def authenticate():
+    if 'role' not in st.session_state:
+        st.session_state.role = None
+
+    with st.sidebar:
+        st.header("🔐 Login")
+        user = st.text_input("Username")
+        pwd = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if user == "admin" and pwd == "admin123":
+                st.session_state.role = "admin"
+            elif user == "collector" and pwd == "collector123":
+                st.session_state.role = "collector"
+            else:
+                st.error("Invalid credentials")
+
+    return st.session_state.role
+
+
+# ===================== DASHBOARD =====================
+def dashboard(db):
+    st.subheader("📊 Business Dashboard")
+
+    d = db.dashboard_summary()
+
+    # --- ROW 1: Business Snapshot ---
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("👥 Total Customers", d["total_customers"])
+    c2.metric("💼 Principal Given", f"₹{d['total_principal']:,.2f}")
+    c3.metric("💰 Total Collected", f"₹{d['total_collected']:,.2f}")
+    c4.metric("📉 Money With Customers", f"₹{d['money_with_customers']:,.2f}")
+
+    st.divider()
+
+    # --- ROW 2: Risk & Health ---
+    c5, c6, c7, c8, c9 = st.columns(5)
+    c5.metric("🚨 Overdue Customers", d["overdue_customers"])
+    c6.metric("⏳ Overdue Amount", f"₹{d['overdue_amount']:,.2f}")
+    c7.metric("📅 Today’s Target", f"₹{d['todays_target']:,.2f}")
+    c8.metric("✅ Today’s Collection", f"₹{d['todays_collected']:,.2f}")
+    c9.metric("🟣 Advance Used Today",f"₹{d['advance_used_today']:,.2f}",help="Amount of today's installment settled using past advance payments")
+
+
+    st.divider()
+
+    # --- ROW 3: Performance ---
+    c9, c10, c11 = st.columns(3)
+    c9.metric("📈 Collection Efficiency", f"{d['efficiency']}%")
+    c10.metric("🟢 Closed Customers", d["closed_customers"])
+    c11.metric("🟡 Active Customers", d["active_customers"])
+
+
+# ===================== DAY-WISE ANALYSIS =====================
+def day_def day_wise_analysis(db):
+
+    st.subheader("📅 Day-wise Payment Analysis")
+
+    selected_date = st.date_input("Select Date", date.today())
+    selected_date = selected_date.strftime("%Y-%m-%d")
+
+    with get_conn() as conn:
+        c = conn.cursor()
+
+        # 🔹 Total expected for selected date
+        total_expected = c.execute("""
+            SELECT COALESCE(SUM(expected_amount),0)
+            FROM transactions
+            WHERE txn_date = ?
+        """, (selected_date,)).fetchone()[0]
+
+        paid_total = c.execute("""
+            SELECT COALESCE(SUM(paid_amount),0)
+            FROM transactions
+            WHERE txn_date = ?
+              AND paid_amount > 0
+        """, (selected_date,)).fetchone()[0]
+
+        unpaid_total = c.execute("""
+            SELECT COALESCE(SUM(expected_amount - paid_amount),0)
+            FROM transactions
+            WHERE txn_date = ?
+        """, (selected_date,)).fetchone()[0]
+
+        # 🔹 Paid customers (fully settled for that txn_date)
+        paid_rows = c.execute("""
+            SELECT cust.id,
+                   cust.name,
+                   cust.phone,
+                   t.paid_amount
+            FROM customers cust
+            JOIN transactions t ON cust.id = t.customer_id
+            WHERE t.txn_date = ?
+              AND t.paid_amount > 0
+            ORDER BY cust.name
+        """, (selected_date,)).fetchall()
+
+        # 🔹 Unpaid customers
+        unpaid_rows = c.execute("""
+            SELECT cust.id,
+                   cust.name,
+                   cust.phone,
+                   (t.expected_amount - t.paid_amount) AS due_amount
+            FROM customers cust
+            JOIN transactions t ON cust.id = t.customer_id
+            WHERE t.txn_date = ?
+              AND t.paid_amount < t.expected_amount
+            ORDER BY cust.name
+        """, (selected_date,)).fetchall()
+
+    # =========================
+    # Paid Section
+    # =========================
+    st.markdown("### ✅ Paid Customers")
+
+    if paid_rows:
+        df_paid = pd.DataFrame(
+            paid_rows,
+            columns=["ID", "Name", "Phone", "Paid Amount"]
+        )
+        df_paid.index = df_paid.index + 1
+        st.dataframe(
+            df_paid.style.format({"Paid Amount": "₹{:,.2f}"}),
+            use_container_width=True
+        )
+    else:
+        st.info("No payments settled for this date.")
+
+    # =========================
+    # Unpaid Section
+    # =========================
+    st.markdown("### 🔴 Unpaid / Pending Customers")
+
+    if unpaid_rows:
+        df_unpaid = pd.DataFrame(
+            unpaid_rows,
+            columns=["ID", "Name", "Phone", "Due Amount"]
+        )
+        df_unpaid.index = df_unpaid.index + 1
+        st.dataframe(
+            df_unpaid.style.format({"Due Amount": "₹{:,.2f}"}),
+            use_container_width=True
+        )
+    else:
+        st.success("No pending dues for this date.")
+
+    # =========================
+    # Pie Chart
+    # =========================
+    st.markdown("### 📊 Payment Status Pie Chart")
+
+    df_chart = pd.DataFrame({
+        "Status": ["Paid", "Pending"],
+        "Amount": [paid_total, unpaid_total]
+    })
+
+    fig = px.pie(
+        df_chart,
+        names="Status",
+        values="Amount",
+        color="Status",
+        color_discrete_map={
+            "Paid": "#4CAF50",
+            "Pending": "#f44336"
+        },
+        hole=0.35
+    )
+
+    fig.update_traces(textinfo='percent+label')
+    st.plotly_chart(fig, use_container_width=True)
+
+
+
+# ===================== LEDGER COLOR LOGIC =====================
+today = pd.Timestamp(date.today())
+
+
+def highlight_ledger_row(r):
+    txn_date = pd.to_datetime(r['txn_date'])
+    if r['pending'] == 0:
+        color = '#d4edda'      # Green
+    elif txn_date < today:
+        color = '#f8d7da'      # Red
+    else:
+        color = '#fff3cd'      # Yellow
+    return [f'background-color:{color}'] * len(r)
+
+
+def add_customer_ui(db):
+    st.subheader("➕ Add Customer")
+    with st.form("add_customer_form"):
+        name = st.text_input("Customer Name *")
+        addr = st.text_area("Address")
+        phone = st.text_input("Phone *")
+        phonepe_name = st.text_input("PhonePe Contact Name *", help="Exact name as in PhonePe statement")
+        start = st.date_input("Start Date", date.today())
+        daily = st.number_input("Daily Amount *", min_value=0.01, step=0.01, format="%.2f")
+        principal = st.number_input("Principal *", min_value=0.01, step=0.01, format="%.2f")
+        wname = st.text_input("Witness Name")
+        waddr = st.text_area("Witness Address")
+        wphone = st.text_input("Witness Phone")
+        photo = st.file_uploader(
+            "Customer Photo",
+            type=["jpg", "jpeg", "png"]
+            )   
+
+        submitted = st.form_submit_button("Create Customer")
+        if submitted:
+            if not name or not phone:
+                st.error("Customer name and phone are mandatory")
+            else:
+                cid = db.add_customer(
+                    name, phonepe_name, addr, phone, start,
+                    daily, principal,
+                    wname, waddr, wphone
+                )
+                if photo:
+                    photo_path = f"customer_photos/customer_{cid}.jpg"
+                    with open(photo_path, "wb") as f:
+                        f.write(photo.getbuffer())
+
+                    db.update_customer_photo(cid, photo_path)
+                st.success(f"✅ Customer created successfully (ID: {cid})")
+
+
+def collect_payment_ui(db):
+    st.subheader("💳 Collect Payment")
+    customers = db.customers()
+    if customers:
+        with st.form("collect_payment_form"):
+            options = {f"{c['name']} (ID {c['id']})": c['id'] for c in customers}
+            sel = st.selectbox("Customer", options)
+            amt = st.number_input("Amount", min_value=0.01, value=250.00, step=0.01, format="%.2f")
+            d = st.date_input("Payment Date", date.today())
+
+            submitted = st.form_submit_button("Collect Payment")
+            if submitted:
+                with st.spinner("Settling payment..."):
+                    db.collect_payment(options[sel], amt, d)
+                st.success("✅ Payment collected and settled successfully")
+                st.toast("Ledger updated", icon="💰")
+                st.session_state['payment_done'] = True
+
+        if st.session_state.get('payment_done'):
+            st.session_state['payment_done'] = False
+            st.experimental_rerun()  # Safe rerun only for UI refresh
+
+
+def ledger_ui(db):
+    st.subheader("📒 Customer Ledger")
+
+    customers = db.customers()
+    if not customers:
+        st.info("No customers available")
+        return
+
+    options = {f"{c['name']} (ID {c['id']})": c['id'] for c in customers}
+
+    sel = st.selectbox(
+        "Customer",
+        list(options.keys()),
+        index=0,
+        key="ledger"
+    )
+
+    if not sel:
+        st.warning("Please select a customer")
+        return
+
+    cid = options.get(sel)
+    if cid is None:
+        return
+
+    summary = db.customer_ledger_summary(cid)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("💼 Principal", f"₹{summary['principal']:,.2f}")
+    c2.metric("💰 Paid Till Date", f"₹{summary['total_paid']:,.2f}")
+    c3.metric("⏳ Pending Till Today", f"₹{summary['pending_till_today']:,.2f}")
+    c4.metric("📅 Days Paid", f"{summary['days_paid']} / {summary['total_days']}")
+
+    rows = db.ledger(cid)
+    if not rows:
+        st.info("No ledger entries found")
+        return
+
+    df = pd.DataFrame(rows, columns=[
+        "txn_date", "expected_amount", "paid_amount", "pending"
+    ])
+    df.index = df.index + 1
+
+    st.dataframe(
+        df.style.apply(highlight_ledger_row, axis=1),
+        use_container_width=True
+    )
+
+
+
+# ===================== PDF UPLOAD =====================
+
+def parse_phonepe_pdf(file):
+    records = []
+
+    with pdfplumber.open(file) as pdf:
+        # Extract text from all pages
+        text = "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
+
+    # Split text into blocks by dates (start of transaction lines)
+    blocks = re.split(r'\n(?=Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', text)
+
+    for block in blocks:
+        if "CREDIT" not in block.upper():
+            continue  # Skip debit/other entries
+
+        try:
+            # Extract date
+            date_match = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}', block)
+            # Extract amount
+            amt_match = re.search(r'₹([\d,]+\.\d+|[\d,]+)', block)
+            # Extract sender
+            sender_match = re.search(r'Received from\s+([A-Za-z .]+?)(?:\s+CREDIT|\s+₹|\n)', block)
+            # Flexible txn_id extraction
+            txn_match = re.search(r'Transaction\s+ID\s*[:\s]*([A-Za-z0-9]+)', block, re.I)
+            txn_id = txn_match.group(1).strip() if txn_match else None
+
+            if not (date_match and amt_match and sender_match):
+                continue  # Skip if mandatory fields missing
+
+            txn_date = datetime.strptime(date_match.group(), "%b %d, %Y").date()
+            amount = float(amt_match.group(1).replace(",", ""))
+            sender = sender_match.group(1).strip()
+
+            records.append({
+                "date": txn_date,
+                "amount": amount,
+                "sender": sender,
+                "txn_id": txn_id
+            })
+
+        except Exception:
+            continue  # Skip any problematic blocks
+
+    return pd.DataFrame(records)
+
+
+
+
+def find_customer_by_name(db, sender):
+    customers = db.customers()
+    for c in customers:
+        if sender.lower() == c['phonepe_contact_name'].lower():
+            return c['id']
+
+    return None
+
+
+def upload_pdf_ui(db):
+    st.subheader("📄 Upload Daily Payment PDF")
+
+    pdf = st.file_uploader("Upload PhonePe Statement PDF", type=["pdf"])
+
+    if not pdf:
+        st.info("Please upload a PhonePe statement PDF")
+        return
+
+    # 🔹 Date range selector
+    col1, col2 = st.columns(2)
+    with col1:
+        from_date = st.date_input("From Date")
+    with col2:
+        to_date = st.date_input("To Date")
+
+    if from_date > to_date:
+        st.error("From Date cannot be after To Date")
+        return
+
+    # 🔹 Parse PDF
+    df = parse_phonepe_pdf(pdf)
+
+    if df.empty:
+        st.error("No CREDIT transactions found in PDF")
+        return
+
+    # 🔹 Filter by date range
+    df_filtered = df[
+        (df["date"] >= from_date) &
+        (df["date"] <= to_date)
+    ].copy()
+
+    if df_filtered.empty:
+        st.warning("No transactions found in selected date range")
+        return
+
+    st.success(f"Found {len(df_filtered)} transactions in selected date range")
+    st.dataframe(df_filtered, use_container_width=True)
+
+    # 🔹 Import button
+    if st.button("✅ Import to Ledger"):
+        success, failed = 0, 0
+
+        for _, row in df_filtered.iterrows():
+            cid = find_customer_by_name(db, row["sender"])
+            if cid:
+                db.collect_payment(cid, row["amount"], row["date"], txn_id=row["txn_id"])
+                success += 1
+            else:
+                failed += 1
+
+        st.success(f"Imported: {success}")
+        if failed:
+            st.warning(f"Unmatched transactions: {failed}")
+
+        st.rerun()
+
+
+def customer_inquiry_ui(db):
+    st.subheader("🔍 Customer Inquiry & Edit")
+
+    customers = db.customers()
+    if not customers:
+        st.info("No customers found")
+        return
+
+    options = {f"{c['name']} (ID {c['id']})": c['id'] for c in customers}
+    selected = st.selectbox("Select Customer", options)
+
+    cid = options[selected]
+
+    with get_conn() as conn:
+        cust = conn.execute(
+            "SELECT * FROM customers WHERE id=?",
+            (cid,)
+        ).fetchone()
+
+    col1, col2 = st.columns([1, 2])
+
+    # 📸 PHOTO
+    with col1:
+        if cust["customer_photo"]:
+            st.image(cust["customer_photo"], caption="Customer Photo", use_container_width=True)
+        else:
+            st.info("No photo uploaded")
+
+    # ✏️ EDIT FORM
+    with col2:
+        with st.form("edit_customer_form"):
+            name = st.text_input("Name", cust["name"])
+            phonepe = st.text_input("PhonePe Name", cust["phonepe_contact_name"])
+            phone = st.text_input("Phone", cust["phone"])
+            address = st.text_area("Address", cust["address"])
+
+            submitted = st.form_submit_button("💾 Update Customer")
+
+            if submitted:
+                with get_conn() as conn:
+                    conn.execute("""
+                        UPDATE customers
+                        SET name=?, phonepe_contact_name=?, phone=?, address=?
+                        WHERE id=?
+                    """, (name, phonepe, phone, address, cid))
+
+                st.success("✅ Customer details updated")
+                st.rerun()
+
+
+
+
+def main():
+    # -------------------- PAGE CONFIG --------------------
+    st.set_page_config(
+        page_title="Chit Fund Tracker",
+        layout="wide"
+    )
+
+    # -------------------- DB INIT --------------------
+    db = ChitFundDB()
+
+    # -------------------- SESSION STATE --------------------
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+        st.session_state.role = None
+        st.session_state['payment_done'] = False
+
+    # -------------------- LOGIN PAGE --------------------
+    if not st.session_state.logged_in:
+        # Title and welcome message
+        st.markdown("<h1 style='text-align:center;'>💰 Welcome to Chit Fund Tracker</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center; color:gray;'>Please login to continue</p>", unsafe_allow_html=True)
+        st.write("")
+
+        # Centered columns for responsiveness
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            # Compact login card
+            #st.markdown(
+            #    """
+            #    <div style="
+            #        border: 2px solid #4CAF50;
+            #        border-radius: 10px;
+            #        padding: 30px 20px;
+            #        box-shadow: 2px 2px 12px rgba(0,0,0,0.15);
+            #        background-color: #f9f9f9;
+            #   ">
+            #    </div>
+            #    """,
+            #    unsafe_allow_html=True
+            #)
+
+            # Input fields
+            user = st.text_input("Username", placeholder="Enter your username")
+            pwd = st.text_input("Password", type="password", placeholder="Enter your password")
+
+            # Green login button
+            login_btn = st.button("Login", key="login_btn", use_container_width=True)
+
+            if login_btn:
+                if user == "admin" and pwd == "admin123":
+                    st.session_state.logged_in = True
+                    st.session_state.role = "admin"
+                elif user == "collector" and pwd == "collector123":
+                    st.session_state.logged_in = True
+                    st.session_state.role = "collector"
+                else:
+                    st.error("❌ Invalid credentials")
+
+        # Stop rendering rest of app until login
+        st.stop()
+
+    # -------------------- DASHBOARD AFTER LOGIN --------------------
+    role = st.session_state.role
+
+    # -------------------- SIDEBAR --------------------
+    # Logout button at top of sidebar
+    if st.sidebar.button("🔓 Logout"):
+        st.session_state.logged_in = False
+        st.session_state.role = None
+        # Force a rerun
+        st.session_state['rerun_flag'] = not st.session_state.get('rerun_flag', False)
+        st.stop()  # stops current execution, app reruns automatically
+
+    tabs = [
+    "📊 Dashboard",
+    "🔍 Customer Inquiry",
+    "➕ Add Customer",
+    "💳 Collect Payment",
+    "📒 Ledger",
+    "📅 Day-wise Analysis",
+    "📄 Upload Payment PDF"]
+
+    
+    if role == "collector":
+        tabs.remove("➕ Add Customer")
+
+    selected = st.sidebar.radio("Menu", tabs)
+
+
+    # -------------------- TAB RENDER --------------------
+    if selected == "📊 Dashboard":
+        dashboard(db)
+    elif selected == "➕ Add Customer" and role == "admin":
+        add_customer_ui(db)
+    elif selected == "💳 Collect Payment":
+        collect_payment_ui(db)
+    elif selected == "📒 Ledger":
+        ledger_ui(db)
+    elif selected == "📅 Day-wise Analysis":
+        day_wise_analysis(db)
+    elif selected == "📄 Upload Payment PDF":
+        upload_pdf_ui(db)
+    elif selected == "🔍 Customer Inquiry":
+        customer_inquiry_ui(db)
+
+
+
+
+if __name__ == '__main__':
+    main()
