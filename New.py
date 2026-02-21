@@ -17,6 +17,7 @@ import plotly.express as px
 import psycopg2
 import streamlit as st
 from contextlib import contextmanager
+import psycopg2.extras
 
 
 # ===================== DB LAYER =====================
@@ -29,7 +30,6 @@ def get_conn():
         conn.commit()
     finally:
         conn.close()
-
 
 def init_db():
     with get_conn() as conn:
@@ -82,7 +82,7 @@ class ChitFundDB:
                      wname, waddr, wphone):
 
         with get_conn() as conn:
-            cur = conn.cursor()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
             cur.execute("""
                 INSERT INTO customers
@@ -103,7 +103,7 @@ class ChitFundDB:
     def _init_ledger(self, cid):
 
         with get_conn() as conn:
-            cur = conn.cursor()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
             cur.execute("SELECT * FROM customers WHERE id=%s", (cid,))
             cust = cur.fetchone()
@@ -132,7 +132,7 @@ class ChitFundDB:
     def collect_payment(self, cid, amount, pay_date, txn_id=None):
 
         with get_conn() as conn:
-            cur = conn.cursor()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
             if txn_id:
                 cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
@@ -187,7 +187,7 @@ class ChitFundDB:
     def customers(self):
 
         with get_conn() as conn:
-            cur = conn.cursor()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute("SELECT * FROM customers ORDER BY id")
             return cur.fetchall()
 
@@ -195,7 +195,7 @@ class ChitFundDB:
     def ledger(self, cid):
 
         with get_conn() as conn:
-            cur = conn.cursor()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
             cur.execute("""
                 SELECT txn_date, expected_amount, paid_amount,
@@ -211,7 +211,7 @@ class ChitFundDB:
     def update_customer_photo(self, cid, path):
 
         with get_conn() as conn:
-            cur = conn.cursor()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute(
                 "UPDATE customers SET customer_photo=%s WHERE id=%s",
                 (path, cid)
@@ -221,7 +221,7 @@ class ChitFundDB:
     def update_customer(self, cid, name, phonepe, address, phone):
 
         with get_conn() as conn:
-            cur = conn.cursor()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute("""
                 UPDATE customers
                 SET name=%s, phonepe_contact_name=%s,
@@ -234,7 +234,7 @@ class ChitFundDB:
         today = date.today()
 
         with get_conn() as conn:
-            cur = conn.cursor()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
             cur.execute("SELECT COUNT(*) FROM customers")
             total_customers = cur.fetchone()[0]
