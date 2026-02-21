@@ -347,22 +347,47 @@ class ChitFundDB:
 
 
 
-# ===================== AUTH =====================
-def authenticate():
-    if 'role' not in st.session_state:
-        st.session_state.role = None
+# =====================================================
+# 🔐 SECURE LOGIN SYSTEM
+# =====================================================
 
-    with st.sidebar:
-        st.header("🔐 Login")
-        user = st.text_input("Username")
-        pwd = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if user == st.secrets["APP_USERNAME"] and pwd == st.secrets["APP_PASSWORD"]:
-                st.session_state.role = "admin"
+def login_page():
+
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+
+    if st.session_state.logged_in:
+        return
+
+    col1, col2, col3 = st.columns([1,2,1])
+
+    with col2:
+        st.title("🔐 Secure Access")
+
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+
+        if st.button("Login", use_container_width=True):
+
+            if (
+                username == st.secrets["APP_USERNAME"]
+                and password == st.secrets["APP_PASSWORD"]
+            ):
+                st.session_state.logged_in = True
+                st.rerun()
             else:
                 st.error("Invalid credentials")
 
-    return st.session_state.role
+    st.stop()
+
+# Run login check BEFORE loading app
+login_page()
+
+# =====================================================
+# ✅ APP STARTS BELOW
+# =====================================================
+
+st.title("💰 Chit Fund Management Dashboard")
 
 
 # ===================== DASHBOARD =====================
