@@ -2,3 +2,4 @@ streamlit
 pandas
 plotly
 pdfplumber
+psycopg2-binary
