@@ -73,273 +73,161 @@ def init_db():
 
 # ===================== BUSINESS LOGIC =====================
 class ChitFundDB:
+
     def __init__(self):
         init_db()
 
+    # ✅ ADD CUSTOMER
     def add_customer(self, name, phonepe_name, address, phone, start_date, daily, principal,
                      wname, waddr, wphone):
+
         with get_conn() as conn:
-            c = conn.cursor()
-            c.execute("""
+            cur = conn.cursor()
+
+            cur.execute("""
                 INSERT INTO customers
-                    (name, phonepe_contact_name, address, phone, start_date,
-                    daily_amount, principal,
-                    witness_name, witness_address, witness_phone)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (name, phonepe_name, address, phone, start_date, daily, principal,
-                  wname, waddr, wphone))
-            cid = c.lastrowid
+                (name, phonepe_contact_name, address, phone, start_date,
+                 daily_amount, principal,
+                 witness_name, witness_address, witness_phone)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+            """, (name, phonepe_name, address, phone, start_date, daily,
+                  principal, wname, waddr, wphone))
+
+            cid = cur.fetchone()[0]
 
         self._init_ledger(cid)
         return cid
 
+    # ✅ INIT LEDGER
     def _init_ledger(self, cid):
+
         with get_conn() as conn:
-            c = conn.cursor()
-            cust = c.execute("SELECT * FROM customers WHERE id=%s", (cid,)).fetchone()
-            bal = cust['principal']
-            d = datetime.strptime(cust['start_date'], "%Y-%m-%d").date()
+            cur = conn.cursor()
+
+            cur.execute("SELECT * FROM customers WHERE id=%s", (cid,))
+            cust = cur.fetchone()
+
+            principal = float(cust[6])        # adjust index if needed
+            daily_amount = float(cust[5])
+            start_date = cust[4]
+
+            bal = principal
+            d = start_date
 
             while bal > 0:
-                if d.weekday() != 6:  # Skip Sunday
-                    bal -= cust['daily_amount']
-                    c.execute("""
-                        INSERT OR IGNORE INTO transactions
+                if d.weekday() != 6:
+                    bal -= daily_amount
+
+                    cur.execute("""
+                        INSERT INTO transactions
                         (customer_id, txn_date, expected_amount)
-                        VALUES (?, ?, ?)
-                    """, (cid, d, cust['daily_amount']))
+                        VALUES (%s,%s,%s)
+                        ON CONFLICT (customer_id, txn_date) DO NOTHING
+                    """, (cid, d, daily_amount))
+
                 d += timedelta(days=1)
 
+    # ✅ COLLECT PAYMENT
     def collect_payment(self, cid, amount, pay_date, txn_id=None):
 
         with get_conn() as conn:
-            c = conn.cursor()
+            cur = conn.cursor()
 
-            # 🔹 Prevent duplicate txn_id entry
             if txn_id:
-                exists = c.execute("""
-                    SELECT 1 FROM payments WHERE txn_id=?
-                """, (txn_id,)).fetchone()
-                if exists:
+                cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
+                if cur.fetchone():
                     return
 
             amount = float(amount)
             remaining = amount
 
-            # 🔹 Insert payment record
-            c.execute("""
+            cur.execute("""
                 INSERT INTO payments (customer_id, payment_date, amount, txn_id)
-                VALUES (?,?,?,?)
+                VALUES (%s,%s,%s,%s)
             """, (cid, pay_date, amount, txn_id))
 
-            # 🔹 Fetch oldest unpaid transactions
-            txns = c.execute("""
+            cur.execute("""
                 SELECT id, expected_amount, paid_amount
                 FROM transactions
-                WHERE customer_id=?
+                WHERE customer_id=%s
                   AND paid_amount < expected_amount
                 ORDER BY txn_date ASC
-            """, (cid,)).fetchall()
+            """, (cid,))
 
-            # 🔹 Allocate payment to oldest dues first
+            txns = cur.fetchall()
+
             for t in txns:
 
                 if remaining <= 0:
                     break
 
-                txn_id_db = t["id"]
-                expected = float(t["expected_amount"])
-                paid = float(t["paid_amount"])
+                txn_id_db = t[0]
+                expected = float(t[1])
+                paid = float(t[2])
 
                 pending = expected - paid
 
                 if remaining >= pending:
-                    # Fully settle this date
-                    c.execute("""
+                    cur.execute("""
                         UPDATE transactions
                         SET paid_amount = expected_amount
                         WHERE id=%s
                     """, (txn_id_db,))
                     remaining -= pending
                 else:
-                    # Partial settle
-                    c.execute("""
+                    cur.execute("""
                         UPDATE transactions
-                        SET paid_amount = paid_amount + ?
+                        SET paid_amount = paid_amount + %s
                         WHERE id=%s
                     """, (remaining, txn_id_db))
                     remaining = 0
 
-            conn.commit()
-
-
+    # ✅ CUSTOMERS LIST
     def customers(self):
-        with get_conn() as conn:
-            return conn.execute("SELECT * FROM customers ORDER BY id").fetchall()
 
-    def ledger(self, cid):
         with get_conn() as conn:
-            return conn.execute("""
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM customers ORDER BY id")
+            return cur.fetchall()
+
+    # ✅ LEDGER
+    def ledger(self, cid):
+
+        with get_conn() as conn:
+            cur = conn.cursor()
+
+            cur.execute("""
                 SELECT txn_date, expected_amount, paid_amount,
                        expected_amount - paid_amount AS pending
                 FROM transactions
-                WHERE customer_id=?
+                WHERE customer_id=%s
                 ORDER BY txn_date
-            """, (cid,)).fetchall()
+            """, (cid,))
 
-    def customer_ledger_summary(self, cid):
-        today = date.today()
+            return cur.fetchall()
 
-
-
-        with get_conn() as conn:
-            c = conn.cursor()
-
-            principal = c.execute(
-                "SELECT principal FROM customers WHERE id=%s",
-                (cid,)
-            ).fetchone()[0]
-
-            total_paid = c.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE customer_id=?",
-                (cid,)
-            ).fetchone()[0]
-
-            pending_till_today = c.execute("""
-                SELECT COALESCE(SUM(expected_amount - paid_amount), 0)
-                FROM transactions
-                WHERE customer_id=?
-                  AND txn_date <= ?
-                  AND paid_amount < expected_amount
-            """, (cid, today)).fetchone()[0]
-
-            total_days = c.execute(
-                "SELECT COUNT(*) FROM transactions WHERE customer_id=?",
-                (cid,)
-            ).fetchone()[0]
-
-            days_paid = c.execute("""
-                SELECT COUNT(*) FROM transactions
-                WHERE customer_id=?
-                  AND paid_amount >= expected_amount
-            """, (cid,)).fetchone()[0]
-
-        extra_paid = max(0, total_paid - (principal - pending_till_today))
-
-        return {
-            "principal": principal,
-            "total_paid": total_paid,
-            "pending_till_today": pending_till_today,
-            "extra_paid": extra_paid,
-            "days_paid": days_paid,
-            "total_days": total_days
-        }
-
-    def dashboard_summary(self):
-        today = date.today()
-
-        with get_conn() as conn:
-            c = conn.cursor()
-
-            total_customers = c.execute(
-                "SELECT COUNT(*) FROM customers"
-            ).fetchone()[0]
-
-            total_principal = c.execute(
-                "SELECT COALESCE(SUM(principal), 0) FROM customers"
-            ).fetchone()[0]
-
-            total_collected = c.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM payments"
-            ).fetchone()[0]
-
-            money_with_customers = total_principal - total_collected
-
-            overdue_customers = c.execute("""
-                SELECT COUNT(DISTINCT customer_id)
-                FROM transactions
-                WHERE txn_date < ?
-                  AND paid_amount < expected_amount
-            """, (today,)).fetchone()[0]
-
-            overdue_amount = c.execute("""
-                SELECT COALESCE(SUM(expected_amount - paid_amount), 0)
-                FROM transactions
-                WHERE txn_date <= ?
-                  AND paid_amount < expected_amount
-            """, (today,)).fetchone()[0]
-
-            todays_target = c.execute("""
-                SELECT COALESCE(SUM(expected_amount - paid_amount), 0)
-                FROM transactions
-                WHERE txn_date = ?
-                  AND paid_amount < expected_amount
-            """, (today,)).fetchone()[0]
-
-            todays_collected = c.execute("""
-                SELECT COALESCE(SUM(amount), 0)
-                FROM payments
-                WHERE payment_date = ?
-            """, (today,)).fetchone()[0]
-
-            advance_used_today = c.execute("""
-                SELECT COALESCE(SUM(expected_amount), 0)
-                FROM transactions
-                WHERE txn_date = ?
-                  AND paid_amount >= expected_amount
-                  AND customer_id NOT IN (
-                      SELECT customer_id
-                      FROM payments
-                      WHERE payment_date = ?
-                  )
-            """, (today, today)).fetchone()[0]
-
-            closed_customers = c.execute("""
-                SELECT COUNT(*)
-                FROM customers c
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM transactions t
-                    WHERE t.customer_id = c.id
-                      AND t.paid_amount < t.expected_amount
-                )
-            """).fetchone()[0]
-
-        active_customers = total_customers - closed_customers
-
-        efficiency = (
-            round((total_collected / total_principal) * 100, 2)
-            if total_principal else 0
-        )
-
-        return {
-            "total_customers": total_customers,
-            "total_principal": total_principal,
-            "total_collected": total_collected,
-            "money_with_customers": money_with_customers,
-            "overdue_customers": overdue_customers,
-            "overdue_amount": overdue_amount,
-            "todays_target": todays_target,
-            "todays_collected": todays_collected,
-            "advance_used_today": advance_used_today,
-            "closed_customers": closed_customers,
-            "active_customers": active_customers,
-            "efficiency": efficiency
-        }
-    
+    # ✅ UPDATE PHOTO
     def update_customer_photo(self, cid, path):
+
         with get_conn() as conn:
-            conn.execute(
-                "UPDATE customers SET customer_photo=? WHERE id=%s",
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE customers SET customer_photo=%s WHERE id=%s",
                 (path, cid)
             )
 
+    # ✅ UPDATE CUSTOMER
     def update_customer(self, cid, name, phonepe, address, phone):
+
         with get_conn() as conn:
-            conn.execute("""
+            cur = conn.cursor()
+            cur.execute("""
                 UPDATE customers
-                SET name=?, phonepe_contact_name=?, address=?, phone=?
+                SET name=%s, phonepe_contact_name=%s,
+                    address=%s, phone=%s
                 WHERE id=%s
-            """, (name, phonepe, address, phone, cid))    
+            """, (name, phonepe, address, phone, cid)) 
         
     
 
