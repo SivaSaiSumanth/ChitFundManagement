@@ -640,7 +640,7 @@ def collect_payment_ui(db):
 
         if st.session_state.get('payment_done'):
             st.session_state['payment_done'] = False
-            st.experimental_rerun()  # Safe rerun only for UI refresh
+            #st.experimental_rerun()  # Safe rerun only for UI refresh
 
 
 def ledger_ui(db):
