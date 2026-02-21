@@ -14,14 +14,16 @@ import pandas as pd
 import plotly.express as px
 
 
+import psycopg2
+import streamlit as st
+from contextlib import contextmanager
 
-DB_NAME = "chitfund.db"
 
 # ===================== DB LAYER =====================
+
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(st.secrets["DATABASE_URL"])
     try:
         yield conn
         conn.commit()
@@ -32,45 +34,41 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         c = conn.cursor()
-        
+
         c.execute("""
         CREATE TABLE IF NOT EXISTS customers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT,
-            phonepe_contact_name TEXT,
-            address TEXT,
             phone TEXT,
+            address TEXT,
             start_date DATE,
-            daily_amount REAL,
-            principal REAL,
-            witness_name TEXT,
-            witness_address TEXT,
-            witness_phone TEXT,
-            customer_photo TEXT,
+            daily_amount NUMERIC,
+            principal NUMERIC,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """)
 
-
         c.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            customer_id INTEGER REFERENCES customers(id),
             txn_date DATE,
-            expected_amount REAL,
-            paid_amount REAL DEFAULT 0,
+            expected_amount NUMERIC,
+            paid_amount NUMERIC DEFAULT 0,
             UNIQUE(customer_id, txn_date)
-        )""")
+        )
+        """)
 
         c.execute("""
         CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            customer_id INTEGER REFERENCES customers(id),
             payment_date DATE,
-            amount REAL,
+            amount NUMERIC,
             txn_id TEXT UNIQUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )""")
+        )
+        """)
 
 
 # ===================== BUSINESS LOGIC =====================
@@ -98,7 +96,7 @@ class ChitFundDB:
     def _init_ledger(self, cid):
         with get_conn() as conn:
             c = conn.cursor()
-            cust = c.execute("SELECT * FROM customers WHERE id=?", (cid,)).fetchone()
+            cust = c.execute("SELECT * FROM customers WHERE id=%s", (cid,)).fetchone()
             bal = cust['principal']
             d = datetime.strptime(cust['start_date'], "%Y-%m-%d").date()
 
@@ -160,7 +158,7 @@ class ChitFundDB:
                     c.execute("""
                         UPDATE transactions
                         SET paid_amount = expected_amount
-                        WHERE id=?
+                        WHERE id=%s
                     """, (txn_id_db,))
                     remaining -= pending
                 else:
@@ -168,7 +166,7 @@ class ChitFundDB:
                     c.execute("""
                         UPDATE transactions
                         SET paid_amount = paid_amount + ?
-                        WHERE id=?
+                        WHERE id=%s
                     """, (remaining, txn_id_db))
                     remaining = 0
 
@@ -198,7 +196,7 @@ class ChitFundDB:
             c = conn.cursor()
 
             principal = c.execute(
-                "SELECT principal FROM customers WHERE id=?",
+                "SELECT principal FROM customers WHERE id=%s",
                 (cid,)
             ).fetchone()[0]
 
@@ -331,7 +329,7 @@ class ChitFundDB:
     def update_customer_photo(self, cid, path):
         with get_conn() as conn:
             conn.execute(
-                "UPDATE customers SET customer_photo=? WHERE id=?",
+                "UPDATE customers SET customer_photo=? WHERE id=%s",
                 (path, cid)
             )
 
@@ -340,7 +338,7 @@ class ChitFundDB:
             conn.execute("""
                 UPDATE customers
                 SET name=?, phonepe_contact_name=?, address=?, phone=?
-                WHERE id=?
+                WHERE id=%s
             """, (name, phonepe, address, phone, cid))    
         
     
@@ -800,7 +798,7 @@ def customer_inquiry_ui(db):
 
     with get_conn() as conn:
         cust = conn.execute(
-            "SELECT * FROM customers WHERE id=?",
+            "SELECT * FROM customers WHERE id=%s",
             (cid,)
         ).fetchone()
 
@@ -828,7 +826,7 @@ def customer_inquiry_ui(db):
                     conn.execute("""
                         UPDATE customers
                         SET name=?, phonepe_contact_name=?, phone=?, address=?
-                        WHERE id=?
+                        WHERE id=%s
                     """, (name, phonepe, phone, address, cid))
 
                 st.success("✅ Customer details updated")
