@@ -162,9 +162,9 @@ class ChitFundDB:
                 if remaining <= 0:
                     break
 
-                txn_id_db = t[0]
-                expected = float(t[1])
-                paid = float(t[2])
+                txn_id_db = t["id"]
+                expected = float(t["expected_amount"])
+                paid = float(t["paid_amount"])
 
                 pending = expected - paid
 
@@ -229,6 +229,7 @@ class ChitFundDB:
                 WHERE id=%s
             """, (name, phonepe, address, phone, cid))
 
+
     def dashboard_summary(self):
 
         today = date.today()
@@ -236,50 +237,50 @@ class ChitFundDB:
         with get_conn() as conn:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-            cur.execute("SELECT COUNT(*) FROM customers")
-            total_customers = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) AS total FROM customers")
+            total_customers = cur.fetchone()["total"]
 
-            cur.execute("SELECT COALESCE(SUM(principal),0) FROM customers")
-            total_principal = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(principal),0) AS total FROM customers")
+            total_principal = cur.fetchone()["total"]
 
-            cur.execute("SELECT COALESCE(SUM(amount),0) FROM payments")
-            total_collected = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(amount),0) AS total FROM payments")
+            total_collected = cur.fetchone()["total"]
 
             money_with_customers = total_principal - total_collected
 
             cur.execute("""
-                SELECT COUNT(DISTINCT customer_id)
+                SELECT COUNT(DISTINCT customer_id) AS total
                 FROM transactions
                 WHERE txn_date < %s
                   AND paid_amount < expected_amount
             """, (today,))
-            overdue_customers = cur.fetchone()[0]
+            overdue_customers = cur.fetchone()["total"]
 
             cur.execute("""
-                SELECT COALESCE(SUM(expected_amount - paid_amount),0)
+                SELECT COALESCE(SUM(expected_amount - paid_amount),0) AS total
                 FROM transactions
                 WHERE txn_date <= %s
                   AND paid_amount < expected_amount
             """, (today,))
-            overdue_amount = cur.fetchone()[0]
+            overdue_amount = cur.fetchone()["total"]
 
             cur.execute("""
-                SELECT COALESCE(SUM(expected_amount - paid_amount),0)
+                SELECT COALESCE(SUM(expected_amount - paid_amount),0) AS total
                 FROM transactions
                 WHERE txn_date = %s
                   AND paid_amount < expected_amount
             """, (today,))
-            todays_target = cur.fetchone()[0]
-    
+            todays_target = cur.fetchone()["total"]
+
             cur.execute("""
-                SELECT COALESCE(SUM(amount),0)
+                SELECT COALESCE(SUM(amount),0) AS total
                 FROM payments
                 WHERE payment_date = %s
             """, (today,))
-            todays_collected = cur.fetchone()[0]
+            todays_collected = cur.fetchone()["total"]
 
             cur.execute("""
-                SELECT COUNT(*)
+                SELECT COUNT(*) AS total
                 FROM customers c
                 WHERE NOT EXISTS (
                     SELECT 1 FROM transactions t
@@ -287,7 +288,7 @@ class ChitFundDB:
                       AND t.paid_amount < t.expected_amount
                 )
             """)
-            closed_customers = cur.fetchone()[0]
+            closed_customers = cur.fetchone()["total"]
 
         active_customers = total_customers - closed_customers
 
@@ -308,6 +309,67 @@ class ChitFundDB:
             "closed_customers": closed_customers,
             "active_customers": active_customers,
             "efficiency": efficiency
+        }
+
+
+    
+
+    def customer_ledger_summary(self, cid):
+
+        today = date.today()
+    
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+            # Principal
+            cur.execute(
+                "SELECT principal FROM customers WHERE id=%s",
+                (cid,)
+            )
+            principal = cur.fetchone()["principal"]
+
+            # Total Paid
+            cur.execute(
+                "SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE customer_id=%s",
+                (cid,)
+            )
+            total_paid = cur.fetchone()["total"]
+
+            # Pending till today
+            cur.execute("""
+                SELECT COALESCE(SUM(expected_amount - paid_amount),0) AS pending
+                FROM transactions
+                WHERE customer_id=%s
+                  AND txn_date <= %s
+                  AND paid_amount < expected_amount
+            """, (cid, today))
+            pending_till_today = cur.fetchone()["pending"]
+
+            # Total days
+            cur.execute(
+                "SELECT COUNT(*) AS total_days FROM transactions WHERE customer_id=%s",
+                (cid,)
+            )
+            total_days = cur.fetchone()["total_days"]
+
+            # Days paid
+            cur.execute("""
+                SELECT COUNT(*) AS days_paid
+                FROM transactions
+                WHERE customer_id=%s
+                  AND paid_amount >= expected_amount
+            """, (cid,))
+            days_paid = cur.fetchone()["days_paid"]
+
+        extra_paid = max(0, total_paid - (principal - pending_till_today))
+
+        return {
+            "principal": principal,
+            "total_paid": total_paid,
+            "pending_till_today": pending_till_today,
+            "extra_paid": extra_paid,
+            "days_paid": days_paid,
+            "total_days": total_days
         }
         
     
@@ -396,96 +458,81 @@ def day_wise_analysis(db):
     st.subheader("📅 Day-wise Payment Analysis")
 
     selected_date = st.date_input("Select Date", date.today())
-    selected_date = selected_date.strftime("%Y-%m-%d")
 
     with get_conn() as conn:
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # 🔹 Total expected for selected date
-        total_expected = c.execute("""
-            SELECT COALESCE(SUM(expected_amount),0)
+        # Paid amount
+        c.execute("""
+            SELECT COALESCE(SUM(amount),0) AS total
+            FROM payments
+            WHERE payment_date=%s
+        """, (selected_date,))
+        paid_total = c.fetchone()["total"]
+
+        # Total expected
+        c.execute("""
+            SELECT COALESCE(SUM(expected_amount),0) AS total
             FROM transactions
-            WHERE txn_date = ?
-        """, (selected_date,)).fetchone()[0]
+            WHERE txn_date=%s
+        """, (selected_date,))
+        total_expected = c.fetchone()["total"]
 
-        paid_total = c.execute("""
-            SELECT COALESCE(SUM(paid_amount),0)
+        # Unpaid total
+        c.execute("""
+            SELECT COALESCE(SUM(expected_amount - paid_amount),0) AS total
             FROM transactions
-            WHERE txn_date = ?
-              AND paid_amount > 0
-        """, (selected_date,)).fetchone()[0]
+            WHERE txn_date=%s
+              AND paid_amount < expected_amount
+        """, (selected_date,))
+        unpaid_total = c.fetchone()["total"]
 
-        unpaid_total = c.execute("""
-            SELECT COALESCE(SUM(expected_amount - paid_amount),0)
-            FROM transactions
-            WHERE txn_date = ?
-        """, (selected_date,)).fetchone()[0]
-
-        # 🔹 Paid customers (fully settled for that txn_date)
-        paid_rows = c.execute("""
-            SELECT cust.id,
-                   cust.name,
-                   cust.phone,
-                   t.paid_amount
+        # Paid customers
+        c.execute("""
+            SELECT cust.id, cust.name, cust.phone,
+                   SUM(p.amount) AS paid_amount
             FROM customers cust
-            JOIN transactions t ON cust.id = t.customer_id
-            WHERE t.txn_date = ?
-              AND t.paid_amount > 0
+            JOIN payments p ON cust.id = p.customer_id
+            WHERE p.payment_date=%s
+            GROUP BY cust.id, cust.name, cust.phone
             ORDER BY cust.name
-        """, (selected_date,)).fetchall()
+        """, (selected_date,))
+        paid_rows = c.fetchall()
 
-        # 🔹 Unpaid customers
-        unpaid_rows = c.execute("""
-            SELECT cust.id,
-                   cust.name,
-                   cust.phone,
-                   (t.expected_amount - t.paid_amount) AS due_amount
+        # Unpaid customers
+        c.execute("""
+            SELECT cust.id, cust.name, cust.phone,
+                   SUM(t.expected_amount - t.paid_amount) AS due_amount
             FROM customers cust
             JOIN transactions t ON cust.id = t.customer_id
-            WHERE t.txn_date = ?
+            WHERE t.txn_date=%s
               AND t.paid_amount < t.expected_amount
+            GROUP BY cust.id, cust.name, cust.phone
             ORDER BY cust.name
-        """, (selected_date,)).fetchall()
+        """, (selected_date,))
+        unpaid_rows = c.fetchall()
 
-    # =========================
-    # Paid Section
-    # =========================
+    # ---- Paid Table ----
     st.markdown("### ✅ Paid Customers")
 
     if paid_rows:
-        df_paid = pd.DataFrame(
-            paid_rows,
-            columns=["ID", "Name", "Phone", "Paid Amount"]
-        )
+        df_paid = pd.DataFrame(paid_rows)
         df_paid.index = df_paid.index + 1
-        st.dataframe(
-            df_paid.style.format({"Paid Amount": "₹{:,.2f}"}),
-            use_container_width=True
-        )
+        st.dataframe(df_paid, use_container_width=True)
     else:
-        st.info("No payments settled for this date.")
+        st.info("No payments collected on this date.")
 
-    # =========================
-    # Unpaid Section
-    # =========================
+    # ---- Unpaid Table ----
     st.markdown("### 🔴 Unpaid / Pending Customers")
 
     if unpaid_rows:
-        df_unpaid = pd.DataFrame(
-            unpaid_rows,
-            columns=["ID", "Name", "Phone", "Due Amount"]
-        )
+        df_unpaid = pd.DataFrame(unpaid_rows)
         df_unpaid.index = df_unpaid.index + 1
-        st.dataframe(
-            df_unpaid.style.format({"Due Amount": "₹{:,.2f}"}),
-            use_container_width=True
-        )
+        st.dataframe(df_unpaid, use_container_width=True)
     else:
         st.success("No pending dues for this date.")
 
-    # =========================
-    # Pie Chart
-    # =========================
+    # ---- Pie Chart ----
     st.markdown("### 📊 Payment Status Pie Chart")
 
     df_chart = pd.DataFrame({
@@ -497,12 +544,7 @@ def day_wise_analysis(db):
         df_chart,
         names="Status",
         values="Amount",
-        color="Status",
-        color_discrete_map={
-            "Paid": "#4CAF50",
-            "Pending": "#f44336"
-        },
-        hole=0.35
+        hole=0.3
     )
 
     fig.update_traces(textinfo='percent+label')
