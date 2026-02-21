@@ -227,7 +227,88 @@ class ChitFundDB:
                 SET name=%s, phonepe_contact_name=%s,
                     address=%s, phone=%s
                 WHERE id=%s
-            """, (name, phonepe, address, phone, cid)) 
+            """, (name, phonepe, address, phone, cid))
+
+    def dashboard_summary(self):
+
+        today = date.today()
+
+        with get_conn() as conn:
+            cur = conn.cursor()
+
+            cur.execute("SELECT COUNT(*) FROM customers")
+            total_customers = cur.fetchone()[0]
+
+            cur.execute("SELECT COALESCE(SUM(principal),0) FROM customers")
+            total_principal = cur.fetchone()[0]
+
+            cur.execute("SELECT COALESCE(SUM(amount),0) FROM payments")
+            total_collected = cur.fetchone()[0]
+
+            money_with_customers = total_principal - total_collected
+
+            cur.execute("""
+                SELECT COUNT(DISTINCT customer_id)
+                FROM transactions
+                WHERE txn_date < %s
+                  AND paid_amount < expected_amount
+            """, (today,))
+            overdue_customers = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT COALESCE(SUM(expected_amount - paid_amount),0)
+                FROM transactions
+                WHERE txn_date <= %s
+                  AND paid_amount < expected_amount
+            """, (today,))
+            overdue_amount = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT COALESCE(SUM(expected_amount - paid_amount),0)
+                FROM transactions
+                WHERE txn_date = %s
+                  AND paid_amount < expected_amount
+            """, (today,))
+            todays_target = cur.fetchone()[0]
+    
+            cur.execute("""
+                SELECT COALESCE(SUM(amount),0)
+                FROM payments
+                WHERE payment_date = %s
+            """, (today,))
+            todays_collected = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM customers c
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM transactions t
+                    WHERE t.customer_id = c.id
+                      AND t.paid_amount < t.expected_amount
+                )
+            """)
+            closed_customers = cur.fetchone()[0]
+
+        active_customers = total_customers - closed_customers
+
+        efficiency = (
+            round((total_collected / total_principal) * 100, 2)
+            if total_principal else 0
+        )
+
+        return {
+            "total_customers": total_customers,
+            "total_principal": total_principal,
+            "total_collected": total_collected,
+            "money_with_customers": money_with_customers,
+            "overdue_customers": overdue_customers,
+            "overdue_amount": overdue_amount,
+            "todays_target": todays_target,
+            "todays_collected": todays_collected,
+            "closed_customers": closed_customers,
+            "active_customers": active_customers,
+            "efficiency": efficiency
+        }
         
     
 
