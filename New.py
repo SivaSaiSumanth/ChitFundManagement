@@ -399,7 +399,7 @@ def dashboard(db):
 
 
 # ===================== DAY-WISE ANALYSIS =====================
-def day_def day_wise_analysis(db):
+def day_wise_analysis(db):
 
     st.subheader("📅 Day-wise Payment Analysis")
 
