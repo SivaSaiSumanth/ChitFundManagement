@@ -36,7 +36,7 @@ def init_db():
         c = conn.cursor()
 
         c.execute("""
-        CREATE TABLE IF NOT EXISTS customers (
+            CREATE TABLE IF NOT EXISTS customers (
             id SERIAL PRIMARY KEY,
             name TEXT,
             phone TEXT,
@@ -44,30 +44,34 @@ def init_db():
             start_date DATE,
             daily_amount NUMERIC,
             principal NUMERIC,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            phonepe_contact_name TEXT,
+            witness_name TEXT,
+            witness_address TEXT,
+            witness_phone TEXT
+        );
         """)
 
         c.execute("""
-        CREATE TABLE IF NOT EXISTS transactions (
+            CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
             customer_id INTEGER REFERENCES customers(id),
             txn_date DATE,
             expected_amount NUMERIC,
             paid_amount NUMERIC DEFAULT 0,
-            UNIQUE(customer_id, txn_date)
-        )
+            UNIQUE (customer_id, txn_date)
+        );
         """)
 
         c.execute("""
-        CREATE TABLE IF NOT EXISTS payments (
+            CREATE TABLE IF NOT EXISTS payments (
             id SERIAL PRIMARY KEY,
             customer_id INTEGER REFERENCES customers(id),
             payment_date DATE,
             amount NUMERIC,
             txn_id TEXT UNIQUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+        );
         """)
 
 
