@@ -108,9 +108,9 @@ class ChitFundDB:
             cur.execute("SELECT * FROM customers WHERE id=%s", (cid,))
             cust = cur.fetchone()
 
-            principal = float(cust[6])        # adjust index if needed
-            daily_amount = float(cust[5])
-            start_date = cust[4]
+            principal = float(cust["principal"])
+            daily_amount = float(cust["daily_amount"])
+            start_date = cust["start_date"]
 
             bal = principal
             d = start_date
