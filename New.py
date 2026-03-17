@@ -242,7 +242,7 @@ class ChitFundDB:
                 LEFT JOIN payment_allocations pa ON pa.transaction_id = t.id
                 LEFT JOIN payments p ON p.id = pa.payment_id
                 WHERE t.customer_id=%s
-                GROUP BY t.id
+                GROUP BY t.id, t.txn_date, t.expected_amount, t.paid_amount
                 ORDER BY t.txn_date
             """, (cid,))
 
@@ -464,8 +464,7 @@ def login_page():
 
     st.stop()
 
-# Run login check BEFORE loading app
-login_page()
+
 
 # =====================================================
 # ✅ APP STARTS BELOW
@@ -732,7 +731,7 @@ def ledger_ui(db):
 
     def get_status(row):
         if row["pending"] == 0:
-            if row["paid_on"] and row["paid_on"] > row["txn_date"]:
+            if pd.notnull(row["paid_on"]) and row["paid_on"] > row["txn_date"]:
                 return "🔴 Late"
             else:
                 return "🟢 On Time"
