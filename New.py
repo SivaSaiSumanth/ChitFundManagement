@@ -671,16 +671,18 @@ def ledger_ui(db):
         st.info("No records found")
         return
 
-    import pandas as pd
-
     df = pd.DataFrame(rows, columns=[
         "Date", "Expected", "Paid", "Pending", "Paid On"
     ])
 
-    # 🔥 STATUS LOGIC
+    # ✅ Keep original datetime for logic
+    df["Date_dt"] = pd.to_datetime(df["Date"])
+    df["Paid_On_dt"] = pd.to_datetime(df["Paid On"], errors="coerce")
+
+    # 🔥 STATUS LOGIC (correct comparison)
     def get_status(row):
         if row["Pending"] == 0:
-            if pd.notnull(row["Paid On"]) and row["Paid On"] > row["Date"]:
+            if pd.notnull(row["Paid_On_dt"]) and row["Paid_On_dt"] > row["Date_dt"]:
                 return "🔴 Late"
             else:
                 return "🟢 On Time"
@@ -688,8 +690,16 @@ def ledger_ui(db):
 
     df["Status"] = df.apply(get_status, axis=1)
 
-    # 🎯 FINAL DISPLAY FORMAT
-    st.dataframe(df, width="stretch")
+    # 🎯 Format for display
+    df["Date"] = df["Date_dt"].dt.strftime("%b %d")
+    df["Paid On"] = df["Paid_On_dt"].dt.strftime("%b %d")
+
+    df["Paid On"] = df["Paid On"].fillna("NULL")
+
+    # Drop helper columns
+    df = df.drop(columns=["Date_dt", "Paid_On_dt"])
+
+    st.dataframe(df, use_container_width=True)
 
 
 
