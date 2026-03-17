@@ -35,7 +35,6 @@ def init_db():
     with get_conn() as conn:
         c = conn.cursor()
 
-        # ---------------- CUSTOMERS ----------------
         c.execute("""
             CREATE TABLE IF NOT EXISTS customers (
             id SERIAL PRIMARY KEY,
@@ -53,7 +52,6 @@ def init_db():
         );
         """)
 
-        # ---------------- TRANSACTIONS ----------------
         c.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
@@ -61,27 +59,20 @@ def init_db():
             txn_date DATE,
             expected_amount NUMERIC,
             paid_amount NUMERIC DEFAULT 0,
+            paid_on DATE,
             UNIQUE (customer_id, txn_date)
         );
         """)
 
-        # ---------------- PAYMENTS ----------------
         c.execute("""
             CREATE TABLE IF NOT EXISTS payments (
             id SERIAL PRIMARY KEY,
             customer_id INTEGER REFERENCES customers(id),
             payment_date DATE,
             amount NUMERIC,
-            txn_id TEXT,
+            txn_id TEXT UNIQUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        """)
-
-        # 🔥 IMPORTANT: Partial unique index (ONLY for non-null txn_id)
-        c.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS unique_txn_id_not_null
-            ON payments(txn_id)
-            WHERE txn_id IS NOT NULL;
         """)
 
 
@@ -145,32 +136,12 @@ class ChitFundDB:
     # ✅ COLLECT PAYMENT
     def collect_payment(self, cid, amount, pay_date, txn_id=None):
 
-        # 🚫 Prevent duplicate transactions
-
         with get_conn() as conn:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-            '''if txn_id:
-                cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
-                if cur.fetchone():
-                    return'''
 
             if txn_id:
                 cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
                 if cur.fetchone():
-                    print(f"Duplicate txn skipped: {txn_id}")
-                    return
-            else:
-                # Fallback duplicate check (when txn_id missing)
-                cur.execute("""
-                        SELECT 1 FROM payments
-                        WHERE customer_id=%s
-                          AND payment_date=%s
-                          AND amount=%s
-                """, (cid, pay_date, amount))
-
-                if cur.fetchone():
-                    print(f"Possible duplicate skipped (no txn_id): {cid}, {pay_date}, {amount}")
                     return
 
             amount = float(amount)
@@ -179,7 +150,6 @@ class ChitFundDB:
             cur.execute("""
                 INSERT INTO payments (customer_id, payment_date, amount, txn_id)
                 VALUES (%s,%s,%s,%s)
-                ON CONFLICT DO NOTHING
             """, (cid, pay_date, amount, txn_id))
 
             cur.execute("""
@@ -234,7 +204,8 @@ class ChitFundDB:
 
             cur.execute("""
                 SELECT txn_date, expected_amount, paid_amount,
-                       expected_amount - paid_amount AS pending
+                       expected_amount - paid_amount AS pending,
+       paid_on
                 FROM transactions
                 WHERE customer_id=%s
                 ORDER BY txn_date
@@ -445,7 +416,7 @@ def login_page():
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
 
-        if st.button("Login", use_container_width=True):
+        if st.button("Login", width='stretch'):
 
             if (
                 username == st.secrets["APP_USERNAME"]
@@ -567,7 +538,7 @@ def day_wise_analysis(db):
     if paid_rows:
         df_paid = pd.DataFrame(paid_rows)
         df_paid.index = df_paid.index + 1
-        st.dataframe(df_paid, use_container_width=True)
+        st.dataframe(df_paid, width='stretch')
     else:
         st.info("No payments collected on this date.")
 
@@ -577,7 +548,7 @@ def day_wise_analysis(db):
     if unpaid_rows:
         df_unpaid = pd.DataFrame(unpaid_rows)
         df_unpaid.index = df_unpaid.index + 1
-        st.dataframe(df_unpaid, use_container_width=True)
+        st.dataframe(df_unpaid, width='stretch')
     else:
         st.success("No pending dues for this date.")
 
@@ -599,7 +570,7 @@ def day_wise_analysis(db):
     )
 
     fig.update_traces(textinfo='percent+label')
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 
@@ -717,13 +688,13 @@ def ledger_ui(db):
         return
 
     df = pd.DataFrame(rows, columns=[
-        "txn_date", "expected_amount", "paid_amount", "pending"
+        "txn_date", "expected_amount", "paid_amount", "pending", "paid_on"
     ])
     df.index = df.index + 1
 
     st.dataframe(
         df.style.apply(highlight_ledger_row, axis=1),
-        use_container_width=True
+        width='stretch'
     )
 
 
@@ -824,7 +795,7 @@ def upload_pdf_ui(db):
         return
 
     st.success(f"Found {len(df_filtered)} transactions in selected date range")
-    st.dataframe(df_filtered, use_container_width=True)
+    st.dataframe(df_filtered, width='stretch')
 
     # 🔹 Import button
     if st.button("✅ Import to Ledger"):
@@ -872,7 +843,7 @@ def customer_inquiry_ui(db):
     # 📸 PHOTO
     with col1:
         if cust.get("customer_photo"):
-            st.image(cust["customer_photo"], caption="Customer Photo", use_container_width=True)
+            st.image(cust["customer_photo"], caption="Customer Photo", width='stretch')
         else:
             st.info("No photo uploaded")
 
@@ -888,15 +859,11 @@ def customer_inquiry_ui(db):
 
             if submitted:
                 with get_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute("""
+                    conn.execute("""
                         UPDATE customers
-                        SET name=%s,
-                        phonepe_contact_name=%s,
-                        phone=%s,
-                        address=%s
+                        SET name=?, phonepe_contact_name=?, phone=?, address=?
                         WHERE id=%s
-                        """, (name, phonepe, phone, address, cid))
+                    """, (name, phonepe, phone, address, cid))
 
                 st.success("✅ Customer details updated")
                 st.rerun()
@@ -950,7 +917,7 @@ def main():
             pwd = st.text_input("Password", type="password", placeholder="Enter your password")
 
             # Green login button
-            login_btn = st.button("Login", key="login_btn", use_container_width=True)
+            login_btn = st.button("Login", key="login_btn", width='stretch')
 
             if login_btn:
                 if user == "admin" and pwd == "admin123":
