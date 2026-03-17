@@ -154,67 +154,67 @@ class ChitFundDB:
     # ✅ COLLECT PAYMENT
     def collect_payment(self, cid, amount, pay_date, txn_id=None):
 
-    with get_conn() as conn:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # 🔁 Duplicate check
-        if txn_id:
-            cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
-            if cur.fetchone():
-                return
+            # 🔁 Duplicate check
+            if txn_id:
+                cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
+                if cur.fetchone():
+                    return
 
-        amount = float(amount)
-        remaining = amount
+            amount = float(amount)
+            remaining = amount
 
-        # ✅ Insert payment and get ID
-        cur.execute("""
-            INSERT INTO payments (customer_id, payment_date, amount, txn_id)
-            VALUES (%s,%s,%s,%s)
-            RETURNING id
-        """, (cid, pay_date, amount, txn_id))
-
-        payment_id = cur.fetchone()["id"]
-
-        # 🔍 Get pending transactions
-        cur.execute("""
-            SELECT id, expected_amount, paid_amount
-            FROM transactions
-            WHERE customer_id=%s
-              AND paid_amount < expected_amount
-            ORDER BY txn_date ASC
-        """, (cid,))
-
-        txns = cur.fetchall()
-
-        for t in txns:
-
-            if remaining <= 0:
-                break
-
-            txn_id_db = t["id"]
-            expected = float(t["expected_amount"])
-            paid = float(t["paid_amount"])
-
-            pending = expected - paid
-
-            # ✅ Allocation amount
-            allocate = min(remaining, pending)
-
-            # 🔁 Update transaction
+            # ✅ Insert payment and get ID
             cur.execute("""
-                UPDATE transactions
-                SET paid_amount = paid_amount + %s
-                WHERE id=%s
-            """, (allocate, txn_id_db))
+                INSERT INTO payments (customer_id, payment_date, amount, txn_id)
+                VALUES (%s,%s,%s,%s)
+                RETURNING id
+            """, (cid, pay_date, amount, txn_id))
 
-            # 🔥 INSERT INTO allocation table
+            payment_id = cur.fetchone()["id"]
+
+            # 🔍 Get pending transactions
             cur.execute("""
-                INSERT INTO payment_allocations
-                (payment_id, transaction_id, allocated_amount)
-                VALUES (%s, %s, %s)
-            """, (payment_id, txn_id_db, allocate))
+                SELECT id, expected_amount, paid_amount
+                FROM transactions
+                WHERE customer_id=%s
+                  AND paid_amount < expected_amount
+                ORDER BY txn_date ASC
+            """, (cid,))
 
-            remaining -= allocate
+            txns = cur.fetchall()
+
+            for t in txns:
+
+                if remaining <= 0:
+                    break
+
+                txn_id_db = t["id"]
+                expected = float(t["expected_amount"])
+                paid = float(t["paid_amount"])
+
+                pending = expected - paid
+
+                # ✅ Allocation amount
+                allocate = min(remaining, pending)
+
+                # 🔁 Update transaction
+                cur.execute("""
+                    UPDATE transactions
+                    SET paid_amount = paid_amount + %s
+                    WHERE id=%s
+                """, (allocate, txn_id_db))
+
+                # 🔥 INSERT INTO allocation table
+                cur.execute("""
+                    INSERT INTO payment_allocations
+                    (payment_id, transaction_id, allocated_amount)
+                    VALUES (%s, %s, %s)
+                """, (payment_id, txn_id_db, allocate))
+
+                remaining -= allocate
 
     # ✅ CUSTOMERS LIST
     def customers(self):
