@@ -35,7 +35,6 @@ def init_db():
     with get_conn() as conn:
         c = conn.cursor()
 
-        # ---------------- CUSTOMERS ----------------
         c.execute("""
             CREATE TABLE IF NOT EXISTS customers (
             id SERIAL PRIMARY KEY,
@@ -53,7 +52,6 @@ def init_db():
         );
         """)
 
-        # ---------------- TRANSACTIONS ----------------
         c.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
@@ -65,23 +63,15 @@ def init_db():
         );
         """)
 
-        # ---------------- PAYMENTS ----------------
         c.execute("""
             CREATE TABLE IF NOT EXISTS payments (
             id SERIAL PRIMARY KEY,
             customer_id INTEGER REFERENCES customers(id),
             payment_date DATE,
             amount NUMERIC,
-            txn_id TEXT,
+            txn_id TEXT UNIQUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        """)
-
-        # 🔥 IMPORTANT: Partial unique index (ONLY for non-null txn_id)
-        c.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS unique_txn_id_not_null
-            ON payments(txn_id)
-            WHERE txn_id IS NOT NULL;
         """)
 
 
@@ -145,42 +135,21 @@ class ChitFundDB:
     # ✅ COLLECT PAYMENT
     def collect_payment(self, cid, amount, pay_date, txn_id=None):
 
-        # 🚫 Prevent duplicate transactions
-
         with get_conn() as conn:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-            '''if txn_id:
-                cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
-                if cur.fetchone():
-                    return'''
 
             if txn_id:
                 cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
                 if cur.fetchone():
-                    print(f"Duplicate txn skipped: {txn_id}")
-                    return
-            else:
-                # Fallback duplicate check (when txn_id missing)
-                cur.execute("""
-                        SELECT 1 FROM payments
-                        WHERE customer_id=%s
-                          AND payment_date=%s
-                          AND amount=%s
-                """, (cid, pay_date, amount))
-
-                if cur.fetchone():
-                    print(f"Possible duplicate skipped (no txn_id): {cid}, {pay_date}, {amount}")
                     return
 
             amount = float(amount)
             remaining = amount
 
             cur.execute("""
-                    INSERT INTO payments (customer_id, payment_date, amount, txn_id)
-                    VALUES (%s,%s,%s,%s)
-                    ON CONFLICT (txn_id) DO NOTHING
-                    """, (cid, pay_date, amount, txn_id))
+                INSERT INTO payments (customer_id, payment_date, amount, txn_id)
+                VALUES (%s,%s,%s,%s)
+            """, (cid, pay_date, amount, txn_id))
 
             cur.execute("""
                 SELECT id, expected_amount, paid_amount
@@ -888,15 +857,11 @@ def customer_inquiry_ui(db):
 
             if submitted:
                 with get_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute("""
+                    conn.execute("""
                         UPDATE customers
-                        SET name=%s,
-                        phonepe_contact_name=%s,
-                        phone=%s,
-                        address=%s
+                        SET name=?, phonepe_contact_name=?, phone=?, address=?
                         WHERE id=%s
-                        """, (name, phonepe, phone, address, cid))
+                    """, (name, phonepe, phone, address, cid))
 
                 st.success("✅ Customer details updated")
                 st.rerun()
