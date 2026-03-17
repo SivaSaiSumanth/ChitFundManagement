@@ -84,6 +84,15 @@ def init_db():
             WHERE txn_id IS NOT NULL;
         """)
 
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS payment_allocations (
+                id SERIAL PRIMARY KEY,
+                payment_id INTEGER REFERENCES payments(id),
+                transaction_id INTEGER REFERENCES transactions(id),
+                allocated_amount NUMERIC
+            );
+        """)
+
 
 # ===================== BUSINESS LOGIC =====================
 class ChitFundDB:
@@ -145,78 +154,67 @@ class ChitFundDB:
     # ✅ COLLECT PAYMENT
     def collect_payment(self, cid, amount, pay_date, txn_id=None):
 
-        # 🚫 Prevent duplicate transactions
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        with get_conn() as conn:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # 🔁 Duplicate check
+        if txn_id:
+            cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
+            if cur.fetchone():
+                return
 
-            '''if txn_id:
-                cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
-                if cur.fetchone():
-                    return'''
+        amount = float(amount)
+        remaining = amount
 
-            if txn_id:
-                cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
-                if cur.fetchone():
-                    print(f"Duplicate txn skipped: {txn_id}")
-                    return
-            else:
-                # Fallback duplicate check (when txn_id missing)
-                cur.execute("""
-                        SELECT 1 FROM payments
-                        WHERE customer_id=%s
-                          AND payment_date=%s
-                          AND amount=%s
-                """, (cid, pay_date, amount))
+        # ✅ Insert payment and get ID
+        cur.execute("""
+            INSERT INTO payments (customer_id, payment_date, amount, txn_id)
+            VALUES (%s,%s,%s,%s)
+            RETURNING id
+        """, (cid, pay_date, amount, txn_id))
 
-                if cur.fetchone():
-                    print(f"Possible duplicate skipped (no txn_id): {cid}, {pay_date}, {amount}")
-                    return
+        payment_id = cur.fetchone()["id"]
 
-            amount = float(amount)
-            remaining = amount
+        # 🔍 Get pending transactions
+        cur.execute("""
+            SELECT id, expected_amount, paid_amount
+            FROM transactions
+            WHERE customer_id=%s
+              AND paid_amount < expected_amount
+            ORDER BY txn_date ASC
+        """, (cid,))
 
+        txns = cur.fetchall()
+
+        for t in txns:
+
+            if remaining <= 0:
+                break
+
+            txn_id_db = t["id"]
+            expected = float(t["expected_amount"])
+            paid = float(t["paid_amount"])
+
+            pending = expected - paid
+
+            # ✅ Allocation amount
+            allocate = min(remaining, pending)
+
+            # 🔁 Update transaction
             cur.execute("""
-                INSERT INTO payments (customer_id, payment_date, amount, txn_id)
-                VALUES (%s,%s,%s,%s)
-                ON CONFLICT DO NOTHING
-            """, (cid, pay_date, amount, txn_id))
+                UPDATE transactions
+                SET paid_amount = paid_amount + %s
+                WHERE id=%s
+            """, (allocate, txn_id_db))
 
+            # 🔥 INSERT INTO allocation table
             cur.execute("""
-                SELECT id, expected_amount, paid_amount
-                FROM transactions
-                WHERE customer_id=%s
-                  AND paid_amount < expected_amount
-                ORDER BY txn_date ASC
-            """, (cid,))
+                INSERT INTO payment_allocations
+                (payment_id, transaction_id, allocated_amount)
+                VALUES (%s, %s, %s)
+            """, (payment_id, txn_id_db, allocate))
 
-            txns = cur.fetchall()
-
-            for t in txns:
-
-                if remaining <= 0:
-                    break
-
-                txn_id_db = t["id"]
-                expected = float(t["expected_amount"])
-                paid = float(t["paid_amount"])
-
-                pending = expected - paid
-
-                if remaining >= pending:
-                    cur.execute("""
-                        UPDATE transactions
-                        SET paid_amount = expected_amount
-                        WHERE id=%s
-                    """, (txn_id_db,))
-                    remaining -= pending
-                else:
-                    cur.execute("""
-                        UPDATE transactions
-                        SET paid_amount = paid_amount + %s
-                        WHERE id=%s
-                    """, (remaining, txn_id_db))
-                    remaining = 0
+            remaining -= allocate
 
     # ✅ CUSTOMERS LIST
     def customers(self):
@@ -233,11 +231,19 @@ class ChitFundDB:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
             cur.execute("""
-                SELECT txn_date, expected_amount, paid_amount,
-                       expected_amount - paid_amount AS pending
-                FROM transactions
-                WHERE customer_id=%s
-                ORDER BY txn_date
+                SELECT 
+                    t.id,
+                    t.txn_date,
+                    t.expected_amount,
+                    t.paid_amount,
+                    (t.expected_amount - t.paid_amount) AS pending,
+                    MAX(p.payment_date) AS paid_on
+                FROM transactions t
+                LEFT JOIN payment_allocations pa ON pa.transaction_id = t.id
+                LEFT JOIN payments p ON p.id = pa.payment_id
+                WHERE t.customer_id=%s
+                GROUP BY t.id
+                ORDER BY t.txn_date
             """, (cid,))
 
             return cur.fetchall()
@@ -716,15 +722,34 @@ def ledger_ui(db):
         st.info("No ledger entries found")
         return
 
+    # ✅ Include new columns
     df = pd.DataFrame(rows, columns=[
-        "txn_date", "expected_amount", "paid_amount", "pending"
+        "id", "txn_date", "expected_amount",
+        "paid_amount", "pending", "paid_on"
     ])
+
     df.index = df.index + 1
 
-    st.dataframe(
-        df.style.apply(highlight_ledger_row, axis=1),
-        use_container_width=True
-    )
+    def get_status(row):
+        if row["pending"] == 0:
+            if row["paid_on"] and row["paid_on"] > row["txn_date"]:
+                return "🔴 Late"
+            else:
+                return "🟢 On Time"
+        return "🟡 Pending"
+
+    # 🔥 APPLY STATUS
+    df["status"] = df.apply(get_status, axis=1)
+
+    # (optional) reorder columns for clean UI
+    df = df[[
+        "txn_date", "expected_amount",
+        "paid_amount", "pending",
+        "paid_on", "status"
+    ]]
+
+    # 🔥 FINAL DISPLAY
+    st.dataframe(df, use_container_width=True)
 
 
 
