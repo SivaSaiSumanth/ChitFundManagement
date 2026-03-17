@@ -1,3 +1,4 @@
+
 # FULL STREAMLIT APP – SQLITE BACKED CHIT FUND TRACKER
 # SQLite + Dashboard + Roles + 3-Color Ledger + Responsive Payment UX
 
@@ -35,6 +36,7 @@ def init_db():
     with get_conn() as conn:
         c = conn.cursor()
 
+        # ---------------- CUSTOMERS ----------------
         c.execute("""
             CREATE TABLE IF NOT EXISTS customers (
             id SERIAL PRIMARY KEY,
@@ -52,6 +54,7 @@ def init_db():
         );
         """)
 
+        # ---------------- TRANSACTIONS ----------------
         c.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
@@ -59,20 +62,27 @@ def init_db():
             txn_date DATE,
             expected_amount NUMERIC,
             paid_amount NUMERIC DEFAULT 0,
-            paid_on DATE,
             UNIQUE (customer_id, txn_date)
         );
         """)
 
+        # ---------------- PAYMENTS ----------------
         c.execute("""
             CREATE TABLE IF NOT EXISTS payments (
             id SERIAL PRIMARY KEY,
             customer_id INTEGER REFERENCES customers(id),
             payment_date DATE,
             amount NUMERIC,
-            txn_id TEXT UNIQUE,
+            txn_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        """)
+
+        # 🔥 IMPORTANT: Partial unique index (ONLY for non-null txn_id)
+        c.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS unique_txn_id_not_null
+            ON payments(txn_id)
+            WHERE txn_id IS NOT NULL;
         """)
 
 
@@ -135,64 +145,79 @@ class ChitFundDB:
 
     # ✅ COLLECT PAYMENT
     def collect_payment(self, cid, amount, pay_date, txn_id=None):
+
+        # 🚫 Prevent duplicate transactions
+
         with get_conn() as conn:
-            cur = conn.cursor()
-    
-            # 🚫 Duplicate prevention
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+            '''if txn_id:
+                cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
+                if cur.fetchone():
+                    return'''
+
             if txn_id:
                 cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
                 if cur.fetchone():
+                    print(f"Duplicate txn skipped: {txn_id}")
                     return
-    
-            # ✅ Insert payment
+            else:
+                # Fallback duplicate check (when txn_id missing)
+                cur.execute("""
+                        SELECT 1 FROM payments
+                        WHERE customer_id=%s
+                          AND payment_date=%s
+                          AND amount=%s
+                """, (cid, pay_date, amount))
+
+                if cur.fetchone():
+                    print(f"Possible duplicate skipped (no txn_id): {cid}, {pay_date}, {amount}")
+                    return
+
+            amount = float(amount)
+            remaining = amount
+
             cur.execute("""
                 INSERT INTO payments (customer_id, payment_date, amount, txn_id)
                 VALUES (%s,%s,%s,%s)
+                ON CONFLICT DO NOTHING
             """, (cid, pay_date, amount, txn_id))
-    
-            remaining = amount
-    
-            # 🔥 Get pending transactions
+
             cur.execute("""
-                SELECT id, txn_date, expected_amount, paid_amount
+                SELECT id, expected_amount, paid_amount
                 FROM transactions
                 WHERE customer_id=%s
-                ORDER BY txn_date
+                  AND paid_amount < expected_amount
+                ORDER BY txn_date ASC
             """, (cid,))
-    
+
             txns = cur.fetchall()
-    
-            # 🔥 Allocation logic
+
             for t in txns:
-                txn_id_db, txn_date, expected, paid = t
-                pending = expected - paid
-    
+
                 if remaining <= 0:
                     break
-    
-                if pending <= 0:
-                    continue
-    
-                allocate = min(remaining, pending)
-    
-                # ✅ FULL PAYMENT
-                if allocate == pending:
+
+                txn_id_db = t["id"]
+                expected = float(t["expected_amount"])
+                paid = float(t["paid_amount"])
+
+                pending = expected - paid
+
+                if remaining >= pending:
                     cur.execute("""
                         UPDATE transactions
-                        SET paid_amount = expected_amount,
-                            paid_on = %s
+                        SET paid_amount = expected_amount
                         WHERE id=%s
-                    """, (pay_date, txn_id_db))
-    
-                # 🟡 PARTIAL PAYMENT
+                    """, (txn_id_db,))
+                    remaining -= pending
                 else:
                     cur.execute("""
                         UPDATE transactions
                         SET paid_amount = paid_amount + %s
                         WHERE id=%s
-                    """, (allocate, txn_id_db))
-    
-                remaining -= allocate
+                    """, (remaining, txn_id_db))
+                    remaining = 0
 
     # ✅ CUSTOMERS LIST
     def customers(self):
@@ -204,21 +229,18 @@ class ChitFundDB:
 
     # ✅ LEDGER
     def ledger(self, cid):
+
         with get_conn() as conn:
-            cur = conn.cursor()
-    
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
             cur.execute("""
-                SELECT 
-                    txn_date,
-                    expected_amount,
-                    paid_amount,
-                    (expected_amount - paid_amount) AS pending,
-                    paid_on
+                SELECT txn_date, expected_amount, paid_amount,
+                       expected_amount - paid_amount AS pending
                 FROM transactions
                 WHERE customer_id=%s
                 ORDER BY txn_date
             """, (cid,))
-    
+
             return cur.fetchall()
 
     # ✅ UPDATE PHOTO
@@ -424,7 +446,7 @@ def login_page():
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
 
-        if st.button("Login", width='stretch'):
+        if st.button("Login", use_container_width=True):
 
             if (
                 username == st.secrets["APP_USERNAME"]
@@ -546,7 +568,7 @@ def day_wise_analysis(db):
     if paid_rows:
         df_paid = pd.DataFrame(paid_rows)
         df_paid.index = df_paid.index + 1
-        st.dataframe(df_paid, width='stretch')
+        st.dataframe(df_paid, use_container_width=True)
     else:
         st.info("No payments collected on this date.")
 
@@ -556,7 +578,7 @@ def day_wise_analysis(db):
     if unpaid_rows:
         df_unpaid = pd.DataFrame(unpaid_rows)
         df_unpaid.index = df_unpaid.index + 1
-        st.dataframe(df_unpaid, width='stretch')
+        st.dataframe(df_unpaid, use_container_width=True)
     else:
         st.success("No pending dues for this date.")
 
@@ -578,7 +600,7 @@ def day_wise_analysis(db):
     )
 
     fig.update_traces(textinfo='percent+label')
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 
 
@@ -660,46 +682,50 @@ def collect_payment_ui(db):
 def ledger_ui(db):
     st.subheader("📒 Customer Ledger")
 
-    cid = st.number_input("Enter Customer ID", step=1)
-
-    if not cid:
+    customers = db.customers()
+    if not customers:
+        st.info("No customers available")
         return
 
-    rows = db.ledger(cid)
+    options = {f"{c['name']} (ID {c['id']})": c['id'] for c in customers}
 
+    sel = st.selectbox(
+        "Customer",
+        list(options.keys()),
+        index=0,
+        key="ledger"
+    )
+
+    if not sel:
+        st.warning("Please select a customer")
+        return
+
+    cid = options.get(sel)
+    if cid is None:
+        return
+
+    summary = db.customer_ledger_summary(cid)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("💼 Principal", f"₹{summary['principal']:,.2f}")
+    c2.metric("💰 Paid Till Date", f"₹{summary['total_paid']:,.2f}")
+    c3.metric("⏳ Pending Till Today", f"₹{summary['pending_till_today']:,.2f}")
+    c4.metric("📅 Days Paid", f"{summary['days_paid']} / {summary['total_days']}")
+
+    rows = db.ledger(cid)
     if not rows:
-        st.info("No records found")
+        st.info("No ledger entries found")
         return
 
     df = pd.DataFrame(rows, columns=[
-        "Date", "Expected", "Paid", "Pending", "Paid On"
+        "txn_date", "expected_amount", "paid_amount", "pending"
     ])
+    df.index = df.index + 1
 
-    # ✅ Keep original datetime for logic
-    df["Date_dt"] = pd.to_datetime(df["Date"])
-    df["Paid_On_dt"] = pd.to_datetime(df["Paid On"], errors="coerce")
-
-    # 🔥 STATUS LOGIC (correct comparison)
-    def get_status(row):
-        if row["Pending"] == 0:
-            if pd.notnull(row["Paid_On_dt"]) and row["Paid_On_dt"] > row["Date_dt"]:
-                return "🔴 Late"
-            else:
-                return "🟢 On Time"
-        return "🟡 Pending"
-
-    df["Status"] = df.apply(get_status, axis=1)
-
-    # 🎯 Format for display
-    df["Date"] = df["Date_dt"].dt.strftime("%b %d")
-    df["Paid On"] = df["Paid_On_dt"].dt.strftime("%b %d")
-
-    df["Paid On"] = df["Paid On"].fillna("NULL")
-
-    # Drop helper columns
-    df = df.drop(columns=["Date_dt", "Paid_On_dt"])
-
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(
+        df.style.apply(highlight_ledger_row, axis=1),
+        use_container_width=True
+    )
 
 
 
@@ -799,7 +825,7 @@ def upload_pdf_ui(db):
         return
 
     st.success(f"Found {len(df_filtered)} transactions in selected date range")
-    st.dataframe(df_filtered, width='stretch')
+    st.dataframe(df_filtered, use_container_width=True)
 
     # 🔹 Import button
     if st.button("✅ Import to Ledger"):
@@ -847,7 +873,7 @@ def customer_inquiry_ui(db):
     # 📸 PHOTO
     with col1:
         if cust.get("customer_photo"):
-            st.image(cust["customer_photo"], caption="Customer Photo", width='stretch')
+            st.image(cust["customer_photo"], caption="Customer Photo", use_container_width=True)
         else:
             st.info("No photo uploaded")
 
@@ -863,11 +889,15 @@ def customer_inquiry_ui(db):
 
             if submitted:
                 with get_conn() as conn:
-                    conn.execute("""
+                    cur = conn.cursor()
+                    cur.execute("""
                         UPDATE customers
-                        SET name=?, phonepe_contact_name=?, phone=?, address=?
+                        SET name=%s,
+                        phonepe_contact_name=%s,
+                        phone=%s,
+                        address=%s
                         WHERE id=%s
-                    """, (name, phonepe, phone, address, cid))
+                        """, (name, phonepe, phone, address, cid))
 
                 st.success("✅ Customer details updated")
                 st.rerun()
@@ -921,7 +951,7 @@ def main():
             pwd = st.text_input("Password", type="password", placeholder="Enter your password")
 
             # Green login button
-            login_btn = st.button("Login", key="login_btn", width='stretch')
+            login_btn = st.button("Login", key="login_btn", use_container_width=True)
 
             if login_btn:
                 if user == "admin" and pwd == "admin123":
