@@ -177,10 +177,10 @@ class ChitFundDB:
             remaining = amount
 
             cur.execute("""
-                    INSERT INTO payments (customer_id, payment_date, amount, txn_id)
-                    VALUES (%s,%s,%s,%s)
-                    ON CONFLICT (txn_id) DO NOTHING
-                    """, (cid, pay_date, amount, txn_id))
+                INSERT INTO payments (customer_id, payment_date, amount, txn_id)
+                VALUES (%s,%s,%s,%s)
+                ON CONFLICT DO NOTHING
+            """, (cid, pay_date, amount, txn_id))
 
             cur.execute("""
                 SELECT id, expected_amount, paid_amount
