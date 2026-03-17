@@ -135,58 +135,64 @@ class ChitFundDB:
 
     # ✅ COLLECT PAYMENT
     def collect_payment(self, cid, amount, pay_date, txn_id=None):
-
         with get_conn() as conn:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
+            cur = conn.cursor()
+    
+            # 🚫 Duplicate prevention
             if txn_id:
                 cur.execute("SELECT 1 FROM payments WHERE txn_id=%s", (txn_id,))
                 if cur.fetchone():
                     return
-
-            amount = float(amount)
-            remaining = amount
-
+    
+            # ✅ Insert payment
             cur.execute("""
                 INSERT INTO payments (customer_id, payment_date, amount, txn_id)
                 VALUES (%s,%s,%s,%s)
             """, (cid, pay_date, amount, txn_id))
-
+    
+            remaining = amount
+    
+            # 🔥 Get pending transactions
             cur.execute("""
-                SELECT id, expected_amount, paid_amount
+                SELECT id, txn_date, expected_amount, paid_amount
                 FROM transactions
                 WHERE customer_id=%s
-                  AND paid_amount < expected_amount
-                ORDER BY txn_date ASC
+                ORDER BY txn_date
             """, (cid,))
-
+    
             txns = cur.fetchall()
-
+    
+            # 🔥 Allocation logic
             for t in txns:
-
+                txn_id_db, txn_date, expected, paid = t
+                pending = expected - paid
+    
                 if remaining <= 0:
                     break
-
-                txn_id_db = t["id"]
-                expected = float(t["expected_amount"])
-                paid = float(t["paid_amount"])
-
-                pending = expected - paid
-
-                if remaining >= pending:
+    
+                if pending <= 0:
+                    continue
+    
+                allocate = min(remaining, pending)
+    
+                # ✅ FULL PAYMENT
+                if allocate == pending:
                     cur.execute("""
                         UPDATE transactions
-                        SET paid_amount = expected_amount
+                        SET paid_amount = expected_amount,
+                            paid_on = %s
                         WHERE id=%s
-                    """, (txn_id_db,))
-                    remaining -= pending
+                    """, (pay_date, txn_id_db))
+    
+                # 🟡 PARTIAL PAYMENT
                 else:
                     cur.execute("""
                         UPDATE transactions
                         SET paid_amount = paid_amount + %s
                         WHERE id=%s
-                    """, (remaining, txn_id_db))
-                    remaining = 0
+                    """, (allocate, txn_id_db))
+    
+                remaining -= allocate
 
     # ✅ CUSTOMERS LIST
     def customers(self):
@@ -198,19 +204,21 @@ class ChitFundDB:
 
     # ✅ LEDGER
     def ledger(self, cid):
-
         with get_conn() as conn:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
+            cur = conn.cursor()
+    
             cur.execute("""
-                SELECT txn_date, expected_amount, paid_amount,
-                       expected_amount - paid_amount AS pending,
-       paid_on
+                SELECT 
+                    txn_date,
+                    expected_amount,
+                    paid_amount,
+                    (expected_amount - paid_amount) AS pending,
+                    paid_on
                 FROM transactions
                 WHERE customer_id=%s
                 ORDER BY txn_date
             """, (cid,))
-
+    
             return cur.fetchall()
 
     # ✅ UPDATE PHOTO
@@ -652,50 +660,36 @@ def collect_payment_ui(db):
 def ledger_ui(db):
     st.subheader("📒 Customer Ledger")
 
-    customers = db.customers()
-    if not customers:
-        st.info("No customers available")
+    cid = st.number_input("Enter Customer ID", step=1)
+
+    if not cid:
         return
-
-    options = {f"{c['name']} (ID {c['id']})": c['id'] for c in customers}
-
-    sel = st.selectbox(
-        "Customer",
-        list(options.keys()),
-        index=0,
-        key="ledger"
-    )
-
-    if not sel:
-        st.warning("Please select a customer")
-        return
-
-    cid = options.get(sel)
-    if cid is None:
-        return
-
-    summary = db.customer_ledger_summary(cid)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("💼 Principal", f"₹{summary['principal']:,.2f}")
-    c2.metric("💰 Paid Till Date", f"₹{summary['total_paid']:,.2f}")
-    c3.metric("⏳ Pending Till Today", f"₹{summary['pending_till_today']:,.2f}")
-    c4.metric("📅 Days Paid", f"{summary['days_paid']} / {summary['total_days']}")
 
     rows = db.ledger(cid)
+
     if not rows:
-        st.info("No ledger entries found")
+        st.info("No records found")
         return
 
-    df = pd.DataFrame(rows, columns=[
-        "txn_date", "expected_amount", "paid_amount", "pending", "paid_on"
-    ])
-    df.index = df.index + 1
+    import pandas as pd
 
-    st.dataframe(
-        df.style.apply(highlight_ledger_row, axis=1),
-        width='stretch'
-    )
+    df = pd.DataFrame(rows, columns=[
+        "Date", "Expected", "Paid", "Pending", "Paid On"
+    ])
+
+    # 🔥 STATUS LOGIC
+    def get_status(row):
+        if row["Pending"] == 0:
+            if pd.notnull(row["Paid On"]) and row["Paid On"] > row["Date"]:
+                return "🔴 Late"
+            else:
+                return "🟢 On Time"
+        return "🟡 Pending"
+
+    df["Status"] = df.apply(get_status, axis=1)
+
+    # 🎯 FINAL DISPLAY FORMAT
+    st.dataframe(df, width="stretch")
 
 
 
