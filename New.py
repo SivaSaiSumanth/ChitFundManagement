@@ -716,7 +716,9 @@ def ledger_ui(db):
         st.info("No ledger entries found")
         return
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=[
+    "txn_date", "expected_amount", "paid_amount", "pending", "last_paid_date"
+        ])
 
     df.rename(columns={
         "txn_date": "Txn Date",
