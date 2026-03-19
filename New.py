@@ -58,7 +58,7 @@ def init_db():
             txn_date DATE,
             expected_amount NUMERIC,
             paid_amount NUMERIC DEFAULT 0,
-            last_paid_date DATE,   -- ✅ NEW COLUMN
+            last_paid_date DATE,
             UNIQUE (customer_id, txn_date)
         );
         """)
@@ -695,20 +695,13 @@ def ledger_ui(db):
 
     options = {f"{c['name']} (ID {c['id']})": c['id'] for c in customers}
 
-    sel = st.selectbox(
-        "Customer",
-        list(options.keys()),
-        index=0,
-        key="ledger"
-    )
+    sel = st.selectbox("Customer", list(options.keys()), index=0, key="ledger")
 
     if not sel:
         st.warning("Please select a customer")
         return
 
     cid = options.get(sel)
-    if cid is None:
-        return
 
     summary = db.customer_ledger_summary(cid)
 
@@ -723,30 +716,32 @@ def ledger_ui(db):
         st.info("No ledger entries found")
         return
 
-    df = pd.DataFrame(rows, columns=[
-        "txn_date", "expected_amount", "paid_amount", "pending", "last_paid_date"
-    ])
-    df.columns = [
-    "Txn Date",
-    "Expected",
-    "Paid",
-    "Pending",
-    "Paid On"
-    ]
-    df["Paid On"] = df["Paid On"].fillna("—")
+    df = pd.DataFrame(rows)
+
+    df.rename(columns={
+        "txn_date": "Txn Date",
+        "expected_amount": "Expected",
+        "paid_amount": "Paid",
+        "pending": "Pending",
+        "last_paid_date": "Paid On"
+    }, inplace=True)
+
+    df["Txn Date"] = pd.to_datetime(df["Txn Date"])
+    df["Paid On"] = pd.to_datetime(df["Paid On"], errors="coerce")
+
     df["Payment Status"] = df.apply(
-        lambda r: "❌ Unpaid" if r["Paid On"] == "—"
-        else ("✅ On Time" if r["Txn Date"] == r["Paid On"]
-        else "⏳ Late"),
+        lambda r: "❌ Unpaid" if pd.isna(r["Paid On"])
+        else ("✅ On Time" if r["Txn Date"].date() == r["Paid On"].date()
+              else "⏳ Late"),
         axis=1
-)
+    )
+
     df.index = df.index + 1
 
     st.dataframe(
         df.style.apply(highlight_ledger_row, axis=1),
-        use_container_width=True
+        width="stretch"
     )
-
 
 
 # ===================== PDF UPLOAD =====================
