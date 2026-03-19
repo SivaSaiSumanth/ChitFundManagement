@@ -3,18 +3,22 @@
 # SQLite + Dashboard + Roles + 3-Color Ledger + Responsive Payment UX
 
 import streamlit as st
+import sqlite3
 from datetime import date, datetime, timedelta
 
 import pdfplumber
 import re
+from datetime import datetime
 
+from contextlib import contextmanager
 import pandas as pd
 import plotly.express as px
 
 
+import psycopg2
+import streamlit as st
 from contextlib import contextmanager
 import psycopg2.extras
-import psycopg2
 
 
 # ===================== DB LAYER =====================
@@ -52,13 +56,12 @@ def init_db():
 
         # ---------------- TRANSACTIONS ----------------
         c.execute("""
-        CREATE TABLE IF NOT EXISTS transactions (
+            CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
             customer_id INTEGER REFERENCES customers(id),
             txn_date DATE,
             expected_amount NUMERIC,
             paid_amount NUMERIC DEFAULT 0,
-            last_paid_date DATE,
             UNIQUE (customer_id, txn_date)
         );
         """)
@@ -204,18 +207,16 @@ class ChitFundDB:
                 if remaining >= pending:
                     cur.execute("""
                         UPDATE transactions
-                        SET paid_amount = expected_amount,
-                            last_paid_date = COALESCE(GREATEST(last_paid_date, %s), %s)
+                        SET paid_amount = expected_amount
                         WHERE id=%s
-                        """, (pay_date, pay_date, txn_id_db))
+                    """, (txn_id_db,))
                     remaining -= pending
                 else:
                     cur.execute("""
                         UPDATE transactions
-                        SET paid_amount = paid_amount + %s,
-                            last_paid_date = COALESCE(GREATEST(last_paid_date, %s), %s)
+                        SET paid_amount = paid_amount + %s
                         WHERE id=%s
-                        """, (remaining, pay_date, pay_date, txn_id_db))
+                    """, (remaining, txn_id_db))
                     remaining = 0
 
     # ✅ CUSTOMERS LIST
@@ -234,8 +235,7 @@ class ChitFundDB:
 
             cur.execute("""
                 SELECT txn_date, expected_amount, paid_amount,
-                       expected_amount - paid_amount AS pending,
-                       last_paid_date
+                       expected_amount - paid_amount AS pending
                 FROM transactions
                 WHERE customer_id=%s
                 ORDER BY txn_date
@@ -609,19 +609,13 @@ today = pd.Timestamp(date.today())
 
 
 def highlight_ledger_row(r):
-    txn_date = pd.to_datetime(r['Txn Date'])
-    paid_date = pd.to_datetime(r['Paid On']) if r['Paid On'] != "—" else None
-
-    if r['Pending'] == 0:
-        if paid_date and paid_date > txn_date:
-            color = '#ffeeba'  # Late
-        else:
-            color = '#d4edda'  # On time
+    txn_date = pd.to_datetime(r['txn_date'])
+    if r['pending'] == 0:
+        color = '#d4edda'      # Green
     elif txn_date < today:
-        color = '#f8d7da'  # Overdue
+        color = '#f8d7da'      # Red
     else:
-        color = '#fff3cd'  # Upcoming
-
+        color = '#fff3cd'      # Yellow
     return [f'background-color:{color}'] * len(r)
 
 
@@ -695,13 +689,20 @@ def ledger_ui(db):
 
     options = {f"{c['name']} (ID {c['id']})": c['id'] for c in customers}
 
-    sel = st.selectbox("Customer", list(options.keys()), index=0, key="ledger")
+    sel = st.selectbox(
+        "Customer",
+        list(options.keys()),
+        index=0,
+        key="ledger"
+    )
 
     if not sel:
         st.warning("Please select a customer")
         return
 
     cid = options.get(sel)
+    if cid is None:
+        return
 
     summary = db.customer_ledger_summary(cid)
 
@@ -717,33 +718,15 @@ def ledger_ui(db):
         return
 
     df = pd.DataFrame(rows, columns=[
-    "txn_date", "expected_amount", "paid_amount", "pending", "last_paid_date"
-        ])
-
-    df.rename(columns={
-        "txn_date": "Txn Date",
-        "expected_amount": "Expected",
-        "paid_amount": "Paid",
-        "pending": "Pending",
-        "last_paid_date": "Paid On"
-    }, inplace=True)
-
-    df["Txn Date"] = pd.to_datetime(df["Txn Date"])
-    df["Paid On"] = pd.to_datetime(df["Paid On"], errors="coerce")
-
-    df["Payment Status"] = df.apply(
-        lambda r: "❌ Unpaid" if pd.isna(r["Paid On"])
-        else ("✅ On Time" if r["Txn Date"].date() == r["Paid On"].date()
-              else "⏳ Late"),
-        axis=1
-    )
-
+        "txn_date", "expected_amount", "paid_amount", "pending"
+    ])
     df.index = df.index + 1
 
     st.dataframe(
         df.style.apply(highlight_ledger_row, axis=1),
-        width="stretch"
+        use_container_width=True
     )
+
 
 
 # ===================== PDF UPLOAD =====================
